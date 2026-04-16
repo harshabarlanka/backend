@@ -76,23 +76,35 @@ const orderSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['pending', 'confirmed', 'packed', 'shipped', 'delivered', 'cancelled', 'refunded'],
+      enum: ['pending', 'confirmed', 'packed', 'shipped', 'out_for_delivery', 'delivered', 'cancelled', 'rto', 'refunded'],
       default: 'pending',
     },
     statusHistory: [statusHistorySchema],
-    // NimbusPost fields
-    shiprocketOrderId: { type: String, default: null },   // kept for DB backward-compat; stores nimbuspost order_id
-    shiprocketShipmentId: { type: String, default: null }, // kept for DB backward-compat; stores nimbuspost shipment_id
+
+    // ─── NimbusPost Shipment Fields ──────────────────────────────────────────
+    // ADDED: Renamed from shiprocket* aliases to clearer nimbuspost* fields.
+    //        Old fields kept for DB backward-compatibility.
+    shiprocketOrderId: { type: String, default: null },    // legacy alias → stores NimbusPost order_id
+    shiprocketShipmentId: { type: String, default: null }, // legacy alias → stores NimbusPost shipment_id
     awbCode: { type: String, default: null },
     courierName: { type: String, default: null },
+    // ADDED: Raw tracking status string from NimbusPost webhook/polling
+    trackingStatus: { type: String, default: null },
+    // ADDED: Timestamp of last tracking update from NimbusPost
+    trackingUpdatedAt: { type: Date, default: null },
+    // ADDED: Flag to distinguish auto-created vs manually-created shipments
+    shipmentAutoCreated: { type: Boolean, default: false },
+
     // Pricing breakdown
     subtotal: { type: Number, required: true },
     shippingCharge: { type: Number, default: 0 },
     tax: { type: Number, default: 0 },
     discount: { type: Number, default: 0 },
     total: { type: Number, required: true },
+
     // Customer notes
     notes: { type: String, maxlength: 300, default: '' },
+
     // COD specific
     isCodCollected: { type: Boolean, default: false },
     codCollectedAt: { type: Date, default: null },

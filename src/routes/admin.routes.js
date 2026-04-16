@@ -7,6 +7,7 @@ const {
   getOrderById,
   updateOrderStatus,
   shipOrder,
+  retryShipment, // ADDED
   getAllUsers,
   toggleUserStatus,
   getAnalytics,
@@ -28,6 +29,7 @@ router.get('/orders', getAllOrders);
 router.get('/orders/:id', getOrderById);
 router.patch('/orders/:id/status', validate(schemas.updateOrderStatus), updateOrderStatus);
 router.post('/orders/:id/ship', shipOrder);
+router.post('/orders/:id/retry-shipment', retryShipment); // ADDED: retry failed auto-shipments
 
 // User management
 router.get('/users', getAllUsers);

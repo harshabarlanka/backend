@@ -5,6 +5,7 @@ const Payment = require('../models/Payment.model');
 const {
   createNimbusPostOrder,
   cancelNimbusPostOrder,
+  autoCreateShipment, // ADDED
 } = require('../services/nimbuspost.service');
 const { sendShipmentEmail, sendReviewRequestEmail } = require('../services/email.service');
 const { restoreStock } = require('./order.controller');
@@ -32,6 +33,8 @@ const getDashboard = catchAsync(async (req, res) => {
     lowStockProducts,
     recentOrders,
     ordersByStatus,
+    // ADDED: Count orders where auto-shipment failed (confirmed but no AWB)
+    shipmentPendingOrders,
   ] = await Promise.all([
     Order.countDocuments(),
     Order.countDocuments({ createdAt: { $gte: startOfMonth } }),
@@ -60,10 +63,15 @@ const getDashboard = catchAsync(async (req, res) => {
       .sort({ createdAt: -1 })
       .limit(5)
       .populate('userId', 'name email')
-      .select('orderNumber status total paymentMethod createdAt'),
+      .select('orderNumber status total paymentMethod createdAt awbCode courierName'),
     Order.aggregate([
       { $group: { _id: '$status', count: { $sum: 1 } } },
     ]),
+    // ADDED: Orders confirmed but without AWB — these need admin attention
+    Order.countDocuments({
+      status: { $in: ['confirmed', 'packed', 'shipped'] },
+      awbCode: null,
+    }),
   ]);
 
   const orderGrowth =
@@ -78,8 +86,9 @@ const getDashboard = catchAsync(async (req, res) => {
       orderGrowth: Number(orderGrowth),
       pendingOrders,
       totalUsers,
-      totalRevenue: (totalRevenue[0]?.total || 0) / 100, // Convert from paise
+      totalRevenue: (totalRevenue[0]?.total || 0) / 100,
       monthRevenue: (monthRevenue[0]?.total || 0) / 100,
+      shipmentPendingOrders, // ADDED: surface in dashboard so admin can act
     },
     lowStockProducts,
     recentOrders,
@@ -100,12 +109,19 @@ const getAllOrders = catchAsync(async (req, res) => {
     paymentMethod,
     search,
     sort = '-createdAt',
+    // ADDED: filter to find orders missing a shipment
+    noAwb,
   } = req.query;
 
   const filter = {};
   if (status) filter.status = status;
   if (paymentMethod) filter.paymentMethod = paymentMethod;
   if (search) filter.orderNumber = { $regex: search, $options: 'i' };
+  // ADDED: ?noAwb=true returns confirmed/shipped orders without an AWB
+  if (noAwb === 'true') {
+    filter.awbCode = null;
+    filter.status = { $in: ['confirmed', 'packed', 'shipped'] };
+  }
 
   const pageNum = Math.max(1, Number(page));
   const limitNum = Math.min(100, Number(limit));
@@ -147,15 +163,17 @@ const updateOrderStatus = catchAsync(async (req, res) => {
   const order = await Order.findById(req.params.id).populate('userId', 'name email');
   if (!order) throw new ApiError(404, 'Order not found.');
 
-  // Define valid transitions
+  // Valid transitions — CHANGED: added rto as a valid terminal state
   const validTransitions = {
-    pending: ['confirmed', 'cancelled'],
-    confirmed: ['packed', 'cancelled'],
-    packed: ['shipped', 'cancelled'],
-    shipped: ['delivered'],
-    delivered: ['refunded'],
-    cancelled: [],
-    refunded: [],
+    pending:          ['confirmed', 'cancelled'],
+    confirmed:        ['packed', 'cancelled'],
+    packed:           ['shipped', 'cancelled'],
+    shipped:          ['out_for_delivery', 'delivered', 'rto'],
+    out_for_delivery: ['delivered', 'rto'],
+    delivered:        ['refunded'],
+    rto:              [],
+    cancelled:        [],
+    refunded:         [],
   };
 
   if (!validTransitions[order.status]?.includes(status)) {
@@ -179,6 +197,7 @@ const updateOrderStatus = catchAsync(async (req, res) => {
     if (order.awbCode) {
       try {
         await cancelNimbusPostOrder(order.awbCode);
+        logger.info(`NimbusPost shipment cancelled for order ${order.orderNumber}`);
       } catch (err) {
         logger.warn(`NimbusPost cancel failed for order ${order.orderNumber}: ${err.message}`);
       }
@@ -186,7 +205,6 @@ const updateOrderStatus = catchAsync(async (req, res) => {
   }
 
   if (status === 'delivered') {
-    // Trigger post-delivery review email
     sendReviewRequestEmail({
       email: order.userId.email,
       name: order.userId.name,
@@ -200,37 +218,42 @@ const updateOrderStatus = catchAsync(async (req, res) => {
 });
 
 // ─── Ship Order via NimbusPost (Admin) ───────────────────────────────────────
+//
+// Manual ship endpoint — still available for admin to override or
+// retry when auto-creation failed.
 
 const shipOrder = catchAsync(async (req, res) => {
   const order = await Order.findById(req.params.id).populate('userId', 'name email');
   if (!order) throw new ApiError(404, 'Order not found.');
 
-  if (order.status !== 'packed') {
-    throw new ApiError(400, `Order must be in "packed" status to ship. Current: "${order.status}".`);
+  if (!['confirmed', 'packed'].includes(order.status)) {
+    throw new ApiError(
+      400,
+      `Order must be in "confirmed" or "packed" status to ship. Current: "${order.status}".`
+    );
   }
 
   if (order.awbCode) {
     throw new ApiError(400, 'This order has already been submitted to NimbusPost.');
   }
 
-  // 1. Create NimbusPost B2B shipment (handles order creation, AWB & pickup in one call)
   const { nimbuspostOrderId, nimbuspostShipmentId, awbCode, courierName, labelUrl } =
     await createNimbusPostOrder(order, order.userId);
 
-  // 2. Update order with NimbusPost details
-  order.shiprocketOrderId = nimbuspostOrderId;   // reuse existing field for compatibility
+  order.shiprocketOrderId = nimbuspostOrderId;
   order.shiprocketShipmentId = nimbuspostShipmentId;
   order.awbCode = awbCode;
   order.courierName = courierName;
+  order.trackingStatus = 'Booked';
+  order.trackingUpdatedAt = new Date();
   order.status = 'shipped';
   order.statusHistory.push({
     status: 'shipped',
-    note: `Shipped via ${courierName}. AWB: ${awbCode}.`,
+    note: `Manually shipped via ${courierName}. AWB: ${awbCode}.`,
     updatedBy: req.user._id,
   });
   await order.save();
 
-  // 3. Send shipment email
   sendShipmentEmail({ email: order.userId.email, name: order.userId.name, order });
 
   return sendResponse(res, 200, 'Order shipped successfully.', {
@@ -242,6 +265,56 @@ const shipOrder = catchAsync(async (req, res) => {
       courierName,
       nimbuspostOrderId,
       labelUrl,
+    },
+  });
+});
+
+// ─── ADDED: Retry Auto-Shipment (Admin) ──────────────────────────────────────
+//
+// POST /api/admin/orders/:id/retry-shipment
+//
+// For orders where the auto-shipment creation failed on placement
+// (e.g. NimbusPost was down, wallet was empty), admin can trigger a retry
+// without needing to change order status.
+
+const retryShipment = catchAsync(async (req, res) => {
+  const order = await Order.findById(req.params.id).populate('userId', 'name email');
+  if (!order) throw new ApiError(404, 'Order not found.');
+
+  if (order.awbCode) {
+    throw new ApiError(400, `Order already has AWB: ${order.awbCode}. No retry needed.`);
+  }
+
+  const allowedStatuses = ['confirmed', 'packed'];
+  if (!allowedStatuses.includes(order.status)) {
+    throw new ApiError(
+      400,
+      `Shipment retry is only available for confirmed/packed orders. Current: "${order.status}".`
+    );
+  }
+
+  // autoCreateShipment is non-throwing — check awbCode after call to detect failure
+  await autoCreateShipment(order, order.userId);
+  await order.save();
+
+  if (!order.awbCode) {
+    throw new ApiError(
+      502,
+      'Shipment creation failed again. Check NimbusPost wallet balance and courier settings.'
+    );
+  }
+
+  logger.info(
+    `Admin retried shipment for order ${order.orderNumber}. AWB: ${order.awbCode}`
+  );
+
+  return sendResponse(res, 200, 'Shipment created successfully on retry.', {
+    order: {
+      _id: order._id,
+      orderNumber: order.orderNumber,
+      awbCode: order.awbCode,
+      courierName: order.courierName,
+      trackingStatus: order.trackingStatus,
     },
   });
 });
@@ -308,12 +381,11 @@ const getAnalytics = catchAsync(async (req, res) => {
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
   const [revenueByDay, topProducts, ordersByPaymentMethod] = await Promise.all([
-    // Daily revenue for the period
     Order.aggregate([
       {
         $match: {
           createdAt: { $gte: since },
-          status: { $in: ['confirmed', 'packed', 'shipped', 'delivered'] },
+          status: { $in: ['confirmed', 'packed', 'shipped', 'out_for_delivery', 'delivered'] },
         },
       },
       {
@@ -326,7 +398,6 @@ const getAnalytics = catchAsync(async (req, res) => {
       { $sort: { _id: 1 } },
     ]),
 
-    // Top-selling products
     Order.aggregate([
       { $match: { createdAt: { $gte: since }, status: { $ne: 'cancelled' } } },
       { $unwind: '$items' },
@@ -342,7 +413,6 @@ const getAnalytics = catchAsync(async (req, res) => {
       { $limit: 10 },
     ]),
 
-    // Orders split by payment method
     Order.aggregate([
       { $match: { createdAt: { $gte: since } } },
       { $group: { _id: '$paymentMethod', count: { $sum: 1 } } },
@@ -366,6 +436,7 @@ module.exports = {
   getOrderById,
   updateOrderStatus,
   shipOrder,
+  retryShipment, // ADDED
   getAllUsers,
   toggleUserStatus,
   getAnalytics,

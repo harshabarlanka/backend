@@ -1,9 +1,11 @@
 const Order = require('../models/Order.model');
 const Cart = require('../models/Cart.model');
 const Payment = require('../models/Payment.model');
+const User = require('../models/User.model'); // ADDED: needed to fetch user for autoCreateShipment
 const { verifyPaymentSignature, verifyWebhookSignature } = require('../services/razorpay.service');
 const { sendOrderConfirmationEmail } = require('../services/email.service');
 const { deductStock, restoreStock } = require('./order.controller');
+const { autoCreateShipment } = require('../services/nimbuspost.service'); // ADDED
 const ApiError = require('../utils/ApiError');
 const { sendResponse } = require('../utils/ApiResponse');
 const catchAsync = require('../utils/catchAsync');
@@ -19,7 +21,7 @@ const verifyPayment = catchAsync(async (req, res) => {
     throw new ApiError(400, 'Missing payment verification fields.');
   }
 
-  // 1. Verify HMAC signature (Bug 3 fixed in razorpay.service.js — now safe)
+  // 1. Verify HMAC signature
   const isValid = verifyPaymentSignature({
     razorpayOrderId,
     razorpayPaymentId,
@@ -73,10 +75,18 @@ const verifyPayment = catchAsync(async (req, res) => {
   // 7. Clear the cart server-side
   await Cart.findOneAndUpdate({ userId: req.user._id }, { $set: { items: [] } });
 
-  // 8. Send confirmation email (fire-and-forget)
-  sendOrderConfirmationEmail({ email: req.user.email, name: req.user.name, order });
+  // 8. ADDED: Auto-create NimbusPost shipment for prepaid (Razorpay) orders.
+  //    This runs after payment is verified and order is confirmed.
+  //    autoCreateShipment is non-throwing — failure is logged, order proceeds normally.
+  await autoCreateShipment(order, req.user);
+  await order.save(); // persist AWB and shipment fields
 
-  logger.info(`Payment verified and order confirmed: ${order.orderNumber}`);
+  logger.info(
+    `Payment verified. Order ${order.orderNumber} confirmed. AWB: ${order.awbCode || 'pending (auto-create failed)'}`
+  );
+
+  // 9. Send confirmation email (fire-and-forget)
+  sendOrderConfirmationEmail({ email: req.user.email, name: req.user.name, order });
 
   return sendResponse(res, 200, 'Payment verified. Order confirmed.', {
     order: {
@@ -84,6 +94,8 @@ const verifyPayment = catchAsync(async (req, res) => {
       orderNumber: order.orderNumber,
       status: order.status,
       total: order.total,
+      awbCode: order.awbCode,       // ADDED: surface AWB in response
+      courierName: order.courierName, // ADDED
     },
   });
 });
@@ -96,7 +108,7 @@ const razorpayWebhook = async (req, res) => {
   const signature = req.headers['x-razorpay-signature'];
   const rawBody = req.body; // Buffer
 
-  // 1. Verify webhook signature (Bug 3 fixed — now returns false instead of throwing)
+  // 1. Verify webhook signature
   let isValid = false;
   try {
     isValid = verifyWebhookSignature(rawBody, signature);
@@ -151,19 +163,21 @@ const razorpayWebhook = async (req, res) => {
             await order.save();
             await deductStock(order.items);
             await Cart.findOneAndUpdate({ userId: order.userId }, { $set: { items: [] } });
+
+            // ADDED: Auto-create NimbusPost shipment via webhook path too.
+            // Fetch user separately since order may not have it populated here.
+            const user = await User.findById(order.userId).select('email name');
+            if (user) {
+              await autoCreateShipment(order, user);
+              await order.save();
+            }
           }
         }
         break;
       }
 
       // ── Payment failed ──────────────────────────────────────────────────────
-      // FIX Bug 1: Original code cancelled the order but never restored stock.
-      // For a payment.failed event the order is still in 'pending' status,
-      // meaning stock was NEVER deducted (deduction only happens on captured).
-      // Therefore we must NOT call restoreStock() here.
-      // We simply mark the order and payment as failed/cancelled.
-      // If by some race condition the order was already 'confirmed' (webhook
-      // arrived late after /verify succeeded), we skip the cancel entirely.
+      // Order is 'pending' so stock was NEVER deducted — do NOT call restoreStock().
       case 'payment.failed': {
         const payment = await Payment.findOne({ razorpayOrderId: payload.order_id });
         if (payment) {
@@ -173,7 +187,6 @@ const razorpayWebhook = async (req, res) => {
 
           const order = await Order.findById(payment.orderId);
           if (order && order.status === 'pending') {
-            // Order is pending → stock was never deducted → no restoreStock() needed
             await Order.findByIdAndUpdate(payment.orderId, {
               $set: { status: 'cancelled' },
               $push: {
@@ -187,7 +200,6 @@ const razorpayWebhook = async (req, res) => {
               `Order ${order.orderNumber} cancelled due to payment.failed webhook.`
             );
           } else if (order && order.status === 'confirmed') {
-            // Payment already captured via /verify endpoint — ignore the failed event.
             logger.warn(
               `payment.failed webhook for already-confirmed order ${order.orderNumber} — ignoring.`
             );

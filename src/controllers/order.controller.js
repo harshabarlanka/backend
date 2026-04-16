@@ -3,12 +3,13 @@ const Cart = require('../models/Cart.model');
 const Payment = require('../models/Payment.model');
 const Product = require('../models/Product.model');
 const { createRazorpayOrder } = require('../services/razorpay.service');
-const { trackShipment } = require('../services/nimbuspost.service');
+const { trackShipment, autoCreateShipment } = require('../services/nimbuspost.service'); // CHANGED: added autoCreateShipment
 const { sendOrderConfirmationEmail } = require('../services/email.service');
 const { generateOrderNumber } = require('../utils/orderNumber');
 const ApiError = require('../utils/ApiError');
 const { sendResponse } = require('../utils/ApiResponse');
 const catchAsync = require('../utils/catchAsync');
+const logger = require('../utils/logger');
 
 // ─── Place Order ──────────────────────────────────────────────────────────────
 
@@ -101,8 +102,8 @@ const placeOrder = catchAsync(async (req, res) => {
   };
 
   // 7a. Razorpay: create RZP order and return credentials to frontend.
-  //     Stock is NOT deducted here — it is deducted only after payment is verified
-  //     (see payment.controller.js → verifyPayment / razorpayWebhook).
+  //     Stock is NOT deducted here — deducted only after payment is verified.
+  //     NimbusPost shipment is also NOT created here — created after verification.
   if (paymentMethod === 'razorpay') {
     const rzpOrder = await createRazorpayOrder(total * 100, orderNumber, {
       order_id: order._id.toString(),
@@ -126,13 +127,23 @@ const placeOrder = catchAsync(async (req, res) => {
     });
   }
 
-  // 7b. COD: confirm immediately, deduct stock, clear cart
+  // 7b. COD: confirm immediately, deduct stock, clear cart, then auto-create shipment
   const payment = await Payment.create(paymentData);
   order.paymentId = payment._id;
   await order.save();
 
   await deductStock(orderItems);
   await Cart.findOneAndUpdate({ userId: req.user._id }, { $set: { items: [] } });
+
+  // ADDED: Auto-create NimbusPost shipment for COD orders immediately on placement.
+  // The order is already 'confirmed' at this point so we have all the info needed.
+  // autoCreateShipment is non-throwing — failure is logged and noted, order still goes through.
+  await autoCreateShipment(order, req.user);
+  await order.save(); // persist AWB and shipment fields written by autoCreateShipment
+
+  logger.info(
+    `COD order ${order.orderNumber} confirmed. AWB: ${order.awbCode || 'pending (auto-create failed)'}`
+  );
 
   // Fire-and-forget confirmation email
   sendOrderConfirmationEmail({ email: req.user.email, name: req.user.name, order });
@@ -144,6 +155,8 @@ const placeOrder = catchAsync(async (req, res) => {
       status: order.status,
       total: order.total,
       paymentMethod: order.paymentMethod,
+      awbCode: order.awbCode,       // ADDED: surface AWB in response for COD
+      courierName: order.courierName, // ADDED
     },
   });
 });
@@ -189,23 +202,6 @@ const getOrder = catchAsync(async (req, res) => {
 
 // ─── Cancel Order ─────────────────────────────────────────────────────────────
 
-/**
- * FIX Bug 2: The original code called restoreStock() unconditionally for ALL
- * cancellable statuses, including 'pending'.
- *
- * A Razorpay order in 'pending' status means the user placed the order but has
- * NOT completed payment yet. Stock is only deducted AFTER successful payment
- * verification (in payment.controller → verifyPayment). Therefore, cancelling
- * a pending Razorpay order must NOT restore stock — there is nothing to restore.
- *
- * Stock deduction timeline:
- *   - COD:       deducted at placeOrder (status → 'confirmed')
- *   - Razorpay:  deducted at verifyPayment (status → 'confirmed')
- *   - pending:   NO stock deducted yet
- *
- * We now only call restoreStock() when the order is in a status where stock
- * was already deducted (confirmed, packed).
- */
 const cancelOrder = catchAsync(async (req, res) => {
   const order = await Order.findOne({
     _id: req.params.id,
@@ -229,12 +225,8 @@ const cancelOrder = catchAsync(async (req, res) => {
     updatedBy: req.user._id,
   });
 
-  // Only restore stock if it was actually deducted.
+  // Only restore stock if payment was captured (i.e. stock was actually deducted).
   // 'pending' = Razorpay order not yet paid → stock never deducted → skip restore.
-  // 'confirmed' and 'packed' = stock was deducted → must restore.
-  const stockWasDeducted = ['confirmed', 'packed'].includes(order.status);
-  // Note: we check BEFORE mutating order.status above — re-read from original.
-  // Re-derive from payment status to be explicit:
   const paymentCaptured =
     order.paymentId &&
     (order.paymentId.status === 'captured' || order.paymentId.status === 'cod_pending');
@@ -259,7 +251,7 @@ const trackOrder = catchAsync(async (req, res) => {
   const order = await Order.findOne({
     _id: req.params.id,
     userId: req.user._id,
-  }).select('awbCode status statusHistory orderNumber courierName');
+  }).select('awbCode status statusHistory orderNumber courierName trackingStatus trackingUpdatedAt');
 
   if (!order) throw new ApiError(404, 'Order not found.');
 
