@@ -45,8 +45,8 @@ app.use(
   express.raw({ type: 'application/json' })
 );
 
-// ADDED: Raw body for NimbusPost webhook signature verification.
-// NimbusPost signs the raw request body with HMAC-SHA256, so we must
+// ADDED: Raw body for Shiprocket webhook signature verification.
+// Shiprocket signs the raw request body with HMAC-SHA256, so we must
 // receive the exact bytes without JSON parsing to verify the signature.
 app.use(
   '/api/shipping/webhook',
@@ -86,7 +86,7 @@ const authLimiter = rateLimit({
 app.use('/api/auth', authLimiter);
 
 // ADDED: Relaxed limiter for webhook routes.
-// NimbusPost may send bursts of status updates (e.g. bulk delivery scans).
+// Shiprocket may send bursts of status updates (e.g. bulk delivery scans).
 // Standard 500/15min global limiter is too tight for automated webhook callers.
 const webhookLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minute

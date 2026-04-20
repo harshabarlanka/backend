@@ -81,18 +81,17 @@ const orderSchema = new mongoose.Schema(
     },
     statusHistory: [statusHistorySchema],
 
-    // ─── NimbusPost Shipment Fields ──────────────────────────────────────────
-    // ADDED: Renamed from shiprocket* aliases to clearer nimbuspost* fields.
-    //        Old fields kept for DB backward-compatibility.
-    shiprocketOrderId: { type: String, default: null },    // legacy alias → stores NimbusPost order_id
-    shiprocketShipmentId: { type: String, default: null }, // legacy alias → stores NimbusPost shipment_id
+    // ─── Shiprocket Shipment Fields ──────────────────────────────────────────
+    // shiprocket* fields store Shiprocket order_id and shipment_id.
+    shiprocketOrderId: { type: String, default: null },
+    shiprocketShipmentId: { type: String, default: null },
     awbCode: { type: String, default: null },
     courierName: { type: String, default: null },
-    // ADDED: Raw tracking status string from NimbusPost webhook/polling
+    // Raw tracking status string from Shiprocket webhook/polling
     trackingStatus: { type: String, default: null },
-    // ADDED: Timestamp of last tracking update from NimbusPost
+    // Timestamp of last tracking update from Shiprocket
     trackingUpdatedAt: { type: Date, default: null },
-    // ADDED: Flag to distinguish auto-created vs manually-created shipments
+    // Flag to distinguish auto-created vs manually-created shipments
     shipmentAutoCreated: { type: Boolean, default: false },
 
     // Pricing breakdown

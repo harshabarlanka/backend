@@ -3,7 +3,7 @@ const Cart = require('../models/Cart.model');
 const Payment = require('../models/Payment.model');
 const Product = require('../models/Product.model');
 const { createRazorpayOrder } = require('../services/razorpay.service');
-const { trackShipment, autoCreateShipment } = require('../services/nimbuspost.service'); // CHANGED: added autoCreateShipment
+const { trackShipment, autoCreateShipment } = require('../services/shiprocket.service');
 const { sendOrderConfirmationEmail } = require('../services/email.service');
 const { generateOrderNumber } = require('../utils/orderNumber');
 const ApiError = require('../utils/ApiError');
@@ -103,7 +103,7 @@ const placeOrder = catchAsync(async (req, res) => {
 
   // 7a. Razorpay: create RZP order and return credentials to frontend.
   //     Stock is NOT deducted here — deducted only after payment is verified.
-  //     NimbusPost shipment is also NOT created here — created after verification.
+  //     Shiprocket shipment is also NOT created here — created after verification.
   if (paymentMethod === 'razorpay') {
     const rzpOrder = await createRazorpayOrder(total * 100, orderNumber, {
       order_id: order._id.toString(),
@@ -135,7 +135,7 @@ const placeOrder = catchAsync(async (req, res) => {
   await deductStock(orderItems);
   await Cart.findOneAndUpdate({ userId: req.user._id }, { $set: { items: [] } });
 
-  // ADDED: Auto-create NimbusPost shipment for COD orders immediately on placement.
+  // ADDED: Auto-create Shiprocket shipment for COD orders immediately on placement.
   // The order is already 'confirmed' at this point so we have all the info needed.
   // autoCreateShipment is non-throwing — failure is logged and noted, order still goes through.
   await autoCreateShipment(order, req.user);

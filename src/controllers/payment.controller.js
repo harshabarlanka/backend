@@ -5,7 +5,7 @@ const User = require('../models/User.model'); // ADDED: needed to fetch user for
 const { verifyPaymentSignature, verifyWebhookSignature } = require('../services/razorpay.service');
 const { sendOrderConfirmationEmail } = require('../services/email.service');
 const { deductStock, restoreStock } = require('./order.controller');
-const { autoCreateShipment } = require('../services/nimbuspost.service'); // ADDED
+const { autoCreateShipment } = require('../services/shiprocket.service');
 const ApiError = require('../utils/ApiError');
 const { sendResponse } = require('../utils/ApiResponse');
 const catchAsync = require('../utils/catchAsync');
@@ -75,7 +75,7 @@ const verifyPayment = catchAsync(async (req, res) => {
   // 7. Clear the cart server-side
   await Cart.findOneAndUpdate({ userId: req.user._id }, { $set: { items: [] } });
 
-  // 8. ADDED: Auto-create NimbusPost shipment for prepaid (Razorpay) orders.
+  // 8. Auto-create Shiprocket shipment for prepaid (Razorpay) orders.
   //    This runs after payment is verified and order is confirmed.
   //    autoCreateShipment is non-throwing — failure is logged, order proceeds normally.
   await autoCreateShipment(order, req.user);
@@ -164,7 +164,7 @@ const razorpayWebhook = async (req, res) => {
             await deductStock(order.items);
             await Cart.findOneAndUpdate({ userId: order.userId }, { $set: { items: [] } });
 
-            // ADDED: Auto-create NimbusPost shipment via webhook path too.
+            // ADDED: Auto-create Shiprocket shipment via webhook path too.
             // Fetch user separately since order may not have it populated here.
             const user = await User.findById(order.userId).select('email name');
             if (user) {

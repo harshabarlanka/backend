@@ -3,10 +3,10 @@ const Product = require('../models/Product.model');
 const User = require('../models/User.model');
 const Payment = require('../models/Payment.model');
 const {
-  createNimbusPostOrder,
-  cancelNimbusPostOrder,
-  autoCreateShipment, // ADDED
-} = require('../services/nimbuspost.service');
+  createShiprocketOrder,
+  cancelShiprocketOrder,
+  autoCreateShipment,
+} = require('../services/shiprocket.service');
 const { sendShipmentEmail, sendReviewRequestEmail } = require('../services/email.service');
 const { restoreStock } = require('./order.controller');
 const ApiError = require('../utils/ApiError');
@@ -196,10 +196,10 @@ const updateOrderStatus = catchAsync(async (req, res) => {
 
     if (order.awbCode) {
       try {
-        await cancelNimbusPostOrder(order.awbCode);
-        logger.info(`NimbusPost shipment cancelled for order ${order.orderNumber}`);
+        await cancelShiprocketOrder(order.awbCode);
+        logger.info(`Shiprocket shipment cancelled for order ${order.orderNumber}`);
       } catch (err) {
-        logger.warn(`NimbusPost cancel failed for order ${order.orderNumber}: ${err.message}`);
+        logger.warn(`Shiprocket cancel failed for order ${order.orderNumber}: ${err.message}`);
       }
     }
   }
@@ -217,7 +217,7 @@ const updateOrderStatus = catchAsync(async (req, res) => {
   return sendResponse(res, 200, `Order status updated to "${status}".`, { order });
 });
 
-// ─── Ship Order via NimbusPost (Admin) ───────────────────────────────────────
+// ─── Ship Order via Shiprocket (Admin) ───────────────────────────────────────
 //
 // Manual ship endpoint — still available for admin to override or
 // retry when auto-creation failed.
@@ -234,14 +234,14 @@ const shipOrder = catchAsync(async (req, res) => {
   }
 
   if (order.awbCode) {
-    throw new ApiError(400, 'This order has already been submitted to NimbusPost.');
+    throw new ApiError(400, 'This order has already been submitted to Shiprocket.');
   }
 
-  const { nimbuspostOrderId, nimbuspostShipmentId, awbCode, courierName, labelUrl } =
-    await createNimbusPostOrder(order, order.userId);
+  const { shiprocketOrderId, shiprocketShipmentId, awbCode, courierName, labelUrl } =
+    await createShiprocketOrder(order, order.userId);
 
-  order.shiprocketOrderId = nimbuspostOrderId;
-  order.shiprocketShipmentId = nimbuspostShipmentId;
+  order.shiprocketOrderId = shiprocketOrderId;
+  order.shiprocketShipmentId = shiprocketShipmentId;
   order.awbCode = awbCode;
   order.courierName = courierName;
   order.trackingStatus = 'Booked';
@@ -263,7 +263,7 @@ const shipOrder = catchAsync(async (req, res) => {
       status: order.status,
       awbCode,
       courierName,
-      nimbuspostOrderId,
+      shiprocketOrderId,
       labelUrl,
     },
   });
@@ -274,7 +274,7 @@ const shipOrder = catchAsync(async (req, res) => {
 // POST /api/admin/orders/:id/retry-shipment
 //
 // For orders where the auto-shipment creation failed on placement
-// (e.g. NimbusPost was down, wallet was empty), admin can trigger a retry
+// (e.g. Shiprocket was down, balance was insufficient), admin can trigger a retry
 // without needing to change order status.
 
 const retryShipment = catchAsync(async (req, res) => {
@@ -300,7 +300,7 @@ const retryShipment = catchAsync(async (req, res) => {
   if (!order.awbCode) {
     throw new ApiError(
       502,
-      'Shipment creation failed again. Check NimbusPost wallet balance and courier settings.'
+      'Shipment creation failed again. Check Shiprocket account and courier settings.'
     );
   }
 
