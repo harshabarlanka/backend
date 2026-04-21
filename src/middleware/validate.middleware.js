@@ -156,7 +156,7 @@ const schemas = {
         .messages({ "string.pattern.base": "Enter a valid 6-digit pincode" }),
       country: Joi.string().default("India"),
     }).required(),
-    paymentMethod: Joi.string().valid("razorpay", "cod").required(),
+    paymentMethod: Joi.string().valid("razorpay").required(),
     notes: Joi.string().max(300).allow("").optional(),
   }),
 
