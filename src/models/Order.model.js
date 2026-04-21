@@ -14,7 +14,7 @@ const orderItemSchema = new mongoose.Schema(
     price: { type: Number, required: true },
     quantity: { type: Number, required: true, min: 1 },
   },
-  { _id: true },
+  { _id: true }
 );
 
 const shippingAddressSchema = new mongoose.Schema(
@@ -28,7 +28,7 @@ const shippingAddressSchema = new mongoose.Schema(
     pincode: { type: String, required: true },
     country: { type: String, default: "India" },
   },
-  { _id: false },
+  { _id: false }
 );
 
 const statusHistorySchema = new mongoose.Schema(
@@ -38,7 +38,7 @@ const statusHistorySchema = new mongoose.Schema(
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     changedAt: { type: Date, default: Date.now },
   },
-  { _id: false },
+  { _id: false }
 );
 
 const trackingEventSchema = new mongoose.Schema(
@@ -48,7 +48,7 @@ const trackingEventSchema = new mongoose.Schema(
     location: { type: String, default: "" },
     activity: { type: String, default: "" },
   },
-  { _id: false },
+  { _id: false }
 );
 
 const orderSchema = new mongoose.Schema(
@@ -74,7 +74,6 @@ const orderSchema = new mongoose.Schema(
 
     shippingAddress: { type: shippingAddressSchema, required: true },
 
-    // COD REMOVED — only razorpay
     paymentMethod: {
       type: String,
       enum: ["razorpay"],
@@ -87,17 +86,21 @@ const orderSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: [
-        "pending",
-        "confirmed",
-        "packed",
+        // Payment states
+        "confirmed",      // payment captured — order confirmed, awaiting preparation
+        // Preparation states (made-to-order flow)
+        "preparing",      // admin started preparation
+        "ready_for_pickup", // admin marked ready — triggers Shiprocket
+        // Shipment states
         "shipped",
         "out_for_delivery",
         "delivered",
+        // Terminal states
         "cancelled",
         "rto",
         "refunded",
       ],
-      default: "pending",
+      default: "confirmed",
     },
 
     statusHistory: [statusHistorySchema],
@@ -106,20 +109,38 @@ const orderSchema = new mongoose.Schema(
     shiprocketOrderId: { type: String, default: null },
     shiprocketShipmentId: { type: String, default: null },
     awbCode: { type: String, default: null },
-    courierName: { type: String, default: null },
 
-    // Raw status string from Shiprocket (e.g. "In Transit", "Delivered")
+    // ── Courier Selection ──────────────────────────────────────────────────────
+    courierId: { type: Number, default: null },
+    courierName: { type: String, default: null },
+    shippingCost: { type: Number, default: 0 },
+    etd: { type: String, default: null },
+
+    // Raw status string from Shiprocket
     trackingStatus: { type: String, default: null },
     trackingUpdatedAt: { type: Date, default: null },
 
-    // Full tracking event log — persisted to avoid repeated API calls
+    // Full tracking event log
     trackingHistory: { type: [trackingEventSchema], default: [] },
 
     // Estimated delivery date from Shiprocket
     estimatedDeliveryDate: { type: Date, default: null },
 
-    // AWB retry cron tracking (BUG-5 fix)
+    // AWB retry cron tracking
     awbRetryCount: { type: Number, default: 0 },
+
+    // ── Invoice / Label PDF cache ─────────────────────────────────────────────
+    invoiceUrl: { type: String, default: null },
+    labelUrl: { type: String, default: null },
+
+    // ── Coupon ────────────────────────────────────────────────────────────────
+    couponCode: { type: String, default: null, uppercase: true },
+    couponId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Coupon",
+      default: null,
+    },
+    discountAmount: { type: Number, default: 0 },
 
     // ── Pricing ───────────────────────────────────────────────────────────────
     subtotal: { type: Number, required: true },
@@ -139,7 +160,7 @@ const orderSchema = new mongoose.Schema(
     timestamps: true,
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
-  },
+  }
 );
 
 // ── Indexes ────────────────────────────────────────────────────────────────────
@@ -148,11 +169,18 @@ orderSchema.index({ orderNumber: 1 });
 orderSchema.index({ status: 1, createdAt: -1 });
 orderSchema.index({ awbCode: 1 });
 orderSchema.index({ shiprocketOrderId: 1 });
-orderSchema.index({ trackingStatus: 1, createdAt: -1, awbRetryCount: 1 }); // AWB retry cron
-orderSchema.index({ idempotencyKey: 1 }); // duplicate guard
+orderSchema.index({ trackingStatus: 1, createdAt: -1, awbRetryCount: 1 });
+orderSchema.index({ idempotencyKey: 1 });
+orderSchema.index({ couponCode: 1 });
 
 orderSchema.virtual("isDelivered").get(function () {
   return this.status === "delivered";
+});
+
+// canCancel: user-facing guard — AWB assigned or beyond confirmed/preparing = no cancel
+orderSchema.virtual("canCancel").get(function () {
+  if (this.awbCode) return false;
+  return ["confirmed", "preparing"].includes(this.status);
 });
 
 module.exports = mongoose.model("Order", orderSchema);

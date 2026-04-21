@@ -7,7 +7,6 @@ const variantSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
-      // e.g. "250g", "500g", "1kg"
     },
     price: {
       type: Number,
@@ -30,7 +29,7 @@ const variantSchema = new mongoose.Schema(
       trim: true,
     },
   },
-  { _id: true },
+  { _id: true }
 );
 
 const reviewSchema = new mongoose.Schema(
@@ -57,7 +56,7 @@ const reviewSchema = new mongoose.Schema(
       maxlength: [500, "Review cannot exceed 500 characters"],
     },
   },
-  { timestamps: true },
+  { timestamps: true }
 );
 
 const productSchema = new mongoose.Schema(
@@ -96,7 +95,7 @@ const productSchema = new mongoose.Schema(
       default: "others",
     },
     images: {
-      type: [String], // Array of Cloudinary URLs
+      type: [String],
       validate: [(arr) => arr.length <= 6, "Cannot upload more than 6 images"],
     },
     variants: {
@@ -104,10 +103,31 @@ const productSchema = new mongoose.Schema(
       validate: [(arr) => arr.length > 0, "At least one variant is required"],
     },
     tags: [{ type: String, lowercase: true, trim: true }],
+
+    // ── Shipping Dimensions (Feature 6) ───────────────────────────────────────
+    // Used by Shiprocket to compute accurate volumetric weight & shipping cost.
+    // All in centimetres (cm) and grams (g).
+    length: {
+      type: Number,
+      default: 15, // cm
+      min: [0.1, "Length must be positive"],
+    },
+    breadth: {
+      type: Number,
+      default: 10, // cm
+      min: [0.1, "Breadth must be positive"],
+    },
+    height: {
+      type: Number,
+      default: 10, // cm
+      min: [0.1, "Height must be positive"],
+    },
     weight: {
       type: Number,
-      default: 500, // grams, used for shipping weight calculation
+      default: 500, // grams — converted to kg when calling Shiprocket
+      min: [1, "Weight must be at least 1g"],
     },
+
     reviews: [reviewSchema],
     ratings: {
       average: { type: Number, default: 0 },
@@ -123,25 +143,25 @@ const productSchema = new mongoose.Schema(
     },
     hsn: {
       type: String,
-      default: "2001", // HSN code for pickles
+      default: "2001",
     },
     taxRate: {
       type: Number,
-      default: 12, // GST %
+      default: 12,
     },
   },
   {
     timestamps: true,
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
-  },
+  }
 );
 
 // ─── Indexes ────────────────────────────────────────────────────────────────
 productSchema.index({ slug: 1 });
 productSchema.index({ category: 1, isActive: 1 });
 productSchema.index({ tags: 1 });
-productSchema.index({ name: "text", description: "text", tags: "text" }); // Full-text search
+productSchema.index({ name: "text", description: "text", tags: "text" });
 
 // ─── Virtual: min price ─────────────────────────────────────────────────────
 productSchema.virtual("minPrice").get(function () {

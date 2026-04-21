@@ -1,35 +1,38 @@
 /**
  * Stock management helpers.
- * Extracted from order.controller to avoid circular dependency
- * between order.controller and payment.controller.
+ * Extracted from order.controller to avoid circular dependency.
+ * Session-aware for MongoDB transactions (Feature 5).
  */
-const Product = require('../models/Product.model');
+const Product = require("../models/Product.model");
 
 /**
  * Atomically decrements stock for all order items using bulkWrite.
- * Safe against concurrent orders (uses $inc, not read-modify-write).
+ * Accepts optional Mongoose session for transaction support.
  */
-const deductStock = async (items) => {
+const deductStock = async (items, session = null) => {
   const ops = items.map((item) => ({
     updateOne: {
-      filter: { _id: item.productId, 'variants._id': item.variantId },
-      update: { $inc: { 'variants.$.stock': -item.quantity } },
+      filter: { _id: item.productId, "variants._id": item.variantId },
+      update: { $inc: { "variants.$.stock": -item.quantity } },
     },
   }));
-  await Product.bulkWrite(ops);
+  const options = session ? { session } : {};
+  await Product.bulkWrite(ops, options);
 };
 
 /**
  * Re-increments stock on order cancellation.
+ * Accepts optional Mongoose session for transaction support.
  */
-const restoreStock = async (items) => {
+const restoreStock = async (items, session = null) => {
   const ops = items.map((item) => ({
     updateOne: {
-      filter: { _id: item.productId, 'variants._id': item.variantId },
-      update: { $inc: { 'variants.$.stock': item.quantity } },
+      filter: { _id: item.productId, "variants._id": item.variantId },
+      update: { $inc: { "variants.$.stock": item.quantity } },
     },
   }));
-  await Product.bulkWrite(ops);
+  const options = session ? { session } : {};
+  await Product.bulkWrite(ops, options);
 };
 
 module.exports = { deductStock, restoreStock };

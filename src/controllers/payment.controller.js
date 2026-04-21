@@ -1,7 +1,9 @@
+const mongoose = require("mongoose");
 const Order = require("../models/Order.model");
 const Cart = require("../models/Cart.model");
 const Payment = require("../models/Payment.model");
 const User = require("../models/User.model");
+const Coupon = require("../models/Coupon.model");
 const {
   verifyPaymentSignature,
   verifyWebhookSignature,
@@ -9,150 +11,229 @@ const {
 } = require("../services/razorpay.service");
 const { sendOrderConfirmationEmail } = require("../services/email.service");
 const { deductStock } = require("../utils/stock");
-const { autoCreateShipment } = require("../services/shiprocket.service");
+const { generateOrderNumber } = require("../utils/orderNumber");
 const ApiError = require("../utils/ApiError");
 const { sendResponse } = require("../utils/ApiResponse");
 const catchAsync = require("../utils/catchAsync");
 const logger = require("../utils/logger");
 
-// ─── Verify Razorpay Payment ──────────────────────────────────────────────────
+// ─── Helper: increment coupon usageCount atomically ───────────────────────────
+const incrementCouponUsage = async (couponId, session) => {
+  if (!couponId) return;
+  await Coupon.findByIdAndUpdate(
+    couponId,
+    { $inc: { usageCount: 1 } },
+    { session }
+  );
+};
+
+// ─── Helper: create Order document from Payment's pendingOrderMeta ────────────
+//
+// Called inside a transaction after signature verification.
+// This is the ONLY place an Order is written to MongoDB.
+
+const createOrderFromPayment = async (payment, userId, razorpayPaymentId, session) => {
+  const meta = payment.pendingOrderMeta;
+  if (!meta) {
+    throw new Error(`Payment ${payment._id} has no pendingOrderMeta`);
+  }
+
+  // Atomic idempotency: if order already exists for this idempotencyKey, skip
+  const existing = await Order.findOne({ idempotencyKey: meta.idempotencyKey }).session(session);
+  if (existing) {
+    logger.info(`[createOrderFromPayment] Order already exists: ${existing.orderNumber}`);
+    return existing;
+  }
+
+  const order = await Order.create(
+    [
+      {
+        orderNumber: meta.orderNumber,
+        idempotencyKey: meta.idempotencyKey,
+        userId,
+        items: meta.items,
+        shippingAddress: meta.shippingAddress,
+        paymentMethod: "razorpay",
+        notes: meta.notes || "",
+        // Coupon
+        couponCode: meta.couponCode || null,
+        couponId: meta.couponId || null,
+        discountAmount: meta.discountAmount || 0,
+        discount: meta.discountAmount || 0,
+        // Shipping (stored for reference; actual carrier assigned at ready_for_pickup)
+        courierId: meta.courierId || null,
+        courierName: meta.courierName || null,
+        shippingCost: meta.shippingCost || 0,
+        shippingCharge: meta.shippingCost || 0,
+        etd: meta.etd || null,
+        // Pricing
+        subtotal: meta.subtotal,
+        tax: meta.tax,
+        total: meta.total,
+        // Payment link
+        paymentId: payment._id,
+        // Status: confirmed immediately (payment already captured)
+        status: "confirmed",
+        statusHistory: [
+          {
+            status: "confirmed",
+            note: `Payment captured. Razorpay Payment ID: ${razorpayPaymentId}`,
+            updatedBy: userId,
+          },
+        ],
+      },
+    ],
+    { session }
+  );
+
+  return order[0];
+};
+
+// ─── Verify Razorpay Payment ───────────────────────────────────────────────────
+//
+// PRODUCTION-SAFE FLOW (called after user completes payment in Razorpay modal):
+//   1. Verify HMAC signature
+//   2. Verify amount against Payment record
+//   3. Inside a MongoDB transaction:
+//      a. Create Order in MongoDB (from Payment.pendingOrderMeta)
+//      b. Update Payment record (captured, link orderId)
+//      c. Deduct stock
+//      d. Clear cart
+//      e. Increment coupon usageCount
+//   4. Send confirmation email (fire-and-forget)
+//   NOTE: NO Shiprocket calls here. Shipment is triggered at ready_for_pickup.
 
 const verifyPayment = catchAsync(async (req, res) => {
-  const { razorpayOrderId, razorpayPaymentId, razorpaySignature, orderId } =
-    req.body;
+  const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
 
-  if (
-    !razorpayOrderId ||
-    !razorpayPaymentId ||
-    !razorpaySignature ||
-    !orderId
-  ) {
+  if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
     throw new ApiError(400, "Missing payment verification fields.");
   }
 
-  // 1. Verify HMAC signature — security critical, must be first
+  // 1. Verify HMAC signature — security critical
   const isValid = verifyPaymentSignature({
     razorpayOrderId,
     razorpayPaymentId,
     razorpaySignature,
   });
   if (!isValid) {
-    logger.warn(
-      `[verifyPayment] Signature mismatch. orderId=${orderId} userId=${req.user._id}`,
-    );
+    logger.warn(`[verifyPayment] Signature mismatch. razorpayOrderId=${razorpayOrderId} userId=${req.user._id}`);
     throw new ApiError(400, "Payment verification failed. Invalid signature.");
   }
 
-  // 2. Verify amount matches our order (prevents amount manipulation attacks)
-  const rzpPayment = await fetchRazorpayPayment(razorpayPaymentId);
-  const orderForAmount = await Order.findOne({
-    _id: orderId,
+  // 2. Load Payment record (contains all pending order metadata)
+  const payment = await Payment.findOne({
+    razorpayOrderId,
     userId: req.user._id,
-  }).select("total");
-  if (!orderForAmount) throw new ApiError(404, "Order not found.");
+  }).select("+pendingOrderMeta");
 
-  if (rzpPayment.amount !== orderForAmount.total * 100) {
-    logger.error(
-      `[verifyPayment] AMOUNT MISMATCH! Expected=${orderForAmount.total * 100}, Got=${rzpPayment.amount}`,
-      {
-        orderId,
-        razorpayPaymentId,
-      },
-    );
-    throw new ApiError(400, "Payment amount mismatch. Contact support.");
+  if (!payment) {
+    throw new ApiError(404, "Payment record not found.");
   }
 
-  // 3. Atomic compare-and-swap: confirm order only if it's still 'pending'
-  //    This prevents the double-deduction race condition between /verify and webhook
-  const order = await Order.findOneAndUpdate(
-    { _id: orderId, userId: req.user._id, status: "pending" },
-    {
-      $set: { status: "confirmed" },
-      $push: {
-        statusHistory: {
-          status: "confirmed",
-          note: `Payment captured. Razorpay Payment ID: ${razorpayPaymentId}`,
-          updatedBy: req.user._id,
-        },
-      },
-    },
-    { new: true },
-  );
-
-  // If findOneAndUpdate returned null, the order was already confirmed (idempotent)
-  if (!order) {
-    const confirmedOrder = await Order.findOne({
-      _id: orderId,
-      userId: req.user._id,
-    });
-    if (confirmedOrder) {
-      logger.info(
-        `[verifyPayment] Order ${confirmedOrder.orderNumber} already confirmed — idempotent response`,
-      );
+  // 2a. Idempotency: if payment already captured, return existing order
+  if (payment.status === "captured" && payment.orderId) {
+    const existingOrder = await Order.findById(payment.orderId);
+    if (existingOrder) {
+      logger.info(`[verifyPayment] Order ${existingOrder.orderNumber} already confirmed — idempotent`);
       return sendResponse(res, 200, "Payment already verified.", {
         order: {
-          _id: confirmedOrder._id,
-          orderNumber: confirmedOrder.orderNumber,
-          status: confirmedOrder.status,
+          _id: existingOrder._id,
+          orderNumber: existingOrder.orderNumber,
+          status: existingOrder.status,
+          total: existingOrder.total,
         },
       });
     }
-    throw new ApiError(404, "Order not found.");
   }
 
-  // 4. Update Payment record
-  await Payment.findByIdAndUpdate(order.paymentId, {
-    $set: {
+  // 3. Verify amount matches our Payment record (prevents amount manipulation)
+  const rzpPayment = await fetchRazorpayPayment(razorpayPaymentId);
+  if (rzpPayment.amount !== payment.amount) {
+    logger.error(`[verifyPayment] AMOUNT MISMATCH! Expected=${payment.amount}, Got=${rzpPayment.amount}`, {
+      razorpayOrderId,
       razorpayPaymentId,
-      razorpaySignature,
-      status: "captured",
-      paidAt: new Date(),
-    },
-  });
+    });
+    throw new ApiError(400, "Payment amount mismatch. Contact support.");
+  }
 
-  // 5. Deduct stock now that payment is atomically confirmed
-  await deductStock(order.items);
+  // 4. MongoDB Transaction — all DB writes atomically
+  const session = await mongoose.startSession();
+  let confirmedOrder = null;
 
-  // 6. Clear the cart
-  await Cart.findOneAndUpdate(
-    { userId: req.user._id },
-    { $set: { items: [] } },
-  );
+  try {
+    await session.withTransaction(async () => {
+      // 4a. Create Order from pendingOrderMeta (idempotent — skips if already exists)
+      confirmedOrder = await createOrderFromPayment(
+        payment,
+        req.user._id,
+        razorpayPaymentId,
+        session
+      );
 
-  // 7. Auto-create Shiprocket shipment (non-throwing)
-  await autoCreateShipment(order, req.user);
-  await order.save(); // persist AWB fields written by autoCreateShipment
+      // 4b. Update Payment record — link orderId, mark captured
+      await Payment.findByIdAndUpdate(
+        payment._id,
+        {
+          $set: {
+            orderId: confirmedOrder._id,
+            razorpayPaymentId,
+            razorpaySignature,
+            status: "captured",
+            paidAt: new Date(),
+          },
+        },
+        { session }
+      );
 
-  logger.info(
-    `[verifyPayment] Order ${order.orderNumber} confirmed. AWB: ${order.awbCode || "pending"}`,
-  );
+      // 4c. Deduct stock atomically
+      await deductStock(confirmedOrder.items, session);
 
-  // 8. Send confirmation email (fire-and-forget)
+      // 4d. Clear the cart
+      await Cart.findOneAndUpdate(
+        { userId: req.user._id },
+        { $set: { items: [] } },
+        { session }
+      );
+
+      // 4e. Increment coupon usageCount (ONLY now, after payment success)
+      await incrementCouponUsage(confirmedOrder.couponId, session);
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  logger.info(`[verifyPayment] Order ${confirmedOrder.orderNumber} confirmed. Status: confirmed. Shiprocket will be triggered at ready_for_pickup.`);
+
+  // 5. Send confirmation email (fire-and-forget — outside transaction)
   sendOrderConfirmationEmail({
     email: req.user.email,
     name: req.user.name,
-    order,
-  });
+    order: confirmedOrder,
+  }).catch((err) =>
+    logger.warn(`[verifyPayment] Email failed for ${confirmedOrder.orderNumber}: ${err.message}`)
+  );
 
   return sendResponse(res, 200, "Payment verified. Order confirmed.", {
     order: {
-      _id: order._id,
-      orderNumber: order.orderNumber,
-      status: order.status,
-      total: order.total,
-      awbCode: order.awbCode,
-      courierName: order.courierName,
+      _id: confirmedOrder._id,
+      orderNumber: confirmedOrder.orderNumber,
+      status: confirmedOrder.status,
+      total: confirmedOrder.total,
     },
   });
 });
 
 // ─── Razorpay Webhook ─────────────────────────────────────────────────────────
+//
+// Fallback path: fires if user closed browser before /verify ran.
+// Same logic as verifyPayment but triggered by Razorpay's server.
+// NO Shiprocket calls here either.
 
 const razorpayWebhook = async (req, res) => {
   const signature = req.headers["x-razorpay-signature"];
   const rawBody = req.body; // Buffer
 
-  // 1. Verify signature
   let isValid = false;
   try {
     isValid = verifyWebhookSignature(rawBody, signature);
@@ -166,7 +247,6 @@ const razorpayWebhook = async (req, res) => {
     return res.status(400).json({ received: false });
   }
 
-  // 2. Parse payload
   let event;
   try {
     event = JSON.parse(rawBody.toString());
@@ -181,68 +261,83 @@ const razorpayWebhook = async (req, res) => {
   try {
     switch (eventType) {
       // ── payment.captured ──────────────────────────────────────────────────
-      // Fallback path: fires if user closed browser before /verify ran.
-      // Uses same atomic findOneAndUpdate pattern to prevent double-deduction.
+      // Fallback: fires if user closed browser before /verify ran.
       case "payment.captured": {
         const payment = await Payment.findOne({
           razorpayOrderId: payload.order_id,
-        });
+        }).select("+pendingOrderMeta");
+
         if (!payment) break;
 
-        if (payment.status !== "captured") {
-          await Payment.findByIdAndUpdate(payment._id, {
-            $set: {
-              razorpayPaymentId: payload.id,
-              status: "captured",
-              paidAt: new Date(),
-              webhookPayload: payload,
-            },
-          });
+        // Already processed
+        if (payment.status === "captured") {
+          logger.info(`[razorpayWebhook] Payment ${payment._id} already captured — skipping`);
+          break;
         }
 
-        // Atomic confirm — same guard as /verify
-        const order = await Order.findOneAndUpdate(
-          { _id: payment.orderId, status: "pending" },
-          {
-            $set: { status: "confirmed" },
-            $push: {
-              statusHistory: {
-                status: "confirmed",
-                note: `Confirmed via Razorpay webhook (payment.captured). Payment: ${payload.id}`,
-              },
-            },
+        // Update payment fields
+        await Payment.findByIdAndUpdate(payment._id, {
+          $set: {
+            razorpayPaymentId: payload.id,
+            status: "captured",
+            paidAt: new Date(),
+            webhookPayload: payload,
           },
-          { new: true },
-        );
+        });
 
-        if (order) {
-          // Only deduct if we won the atomic transition
-          await deductStock(order.items);
-          await Cart.findOneAndUpdate(
-            { userId: order.userId },
-            { $set: { items: [] } },
-          );
+        // Reload with updated data
+        const freshPayment = await Payment.findById(payment._id).select("+pendingOrderMeta");
 
-          const user = await User.findById(order.userId).select("email name");
+        const session = await mongoose.startSession();
+        let webhookOrder = null;
+
+        try {
+          await session.withTransaction(async () => {
+            // Create Order from pendingOrderMeta (idempotent)
+            webhookOrder = await createOrderFromPayment(
+              freshPayment,
+              freshPayment.userId,
+              payload.id,
+              session
+            );
+
+            // Link orderId on Payment
+            await Payment.findByIdAndUpdate(
+              freshPayment._id,
+              { $set: { orderId: webhookOrder._id, razorpayPaymentId: payload.id } },
+              { session }
+            );
+
+            await deductStock(webhookOrder.items, session);
+            await Cart.findOneAndUpdate(
+              { userId: webhookOrder.userId },
+              { $set: { items: [] } },
+              { session }
+            );
+            await incrementCouponUsage(webhookOrder.couponId, session);
+          });
+        } finally {
+          await session.endSession();
+        }
+
+        if (webhookOrder) {
+          const user = await User.findById(webhookOrder.userId).select("email name");
           if (user) {
-            await autoCreateShipment(order, user);
-            await order.save();
             sendOrderConfirmationEmail({
               email: user.email,
               name: user.name,
-              order,
-            });
+              order: webhookOrder,
+            }).catch((err) =>
+              logger.warn(`[razorpayWebhook] Email failed for ${webhookOrder.orderNumber}: ${err.message}`)
+            );
           }
-
-          logger.info(
-            `[razorpayWebhook] Order ${order.orderNumber} confirmed via webhook`,
-          );
+          logger.info(`[razorpayWebhook] Order ${webhookOrder.orderNumber} confirmed via webhook. Shiprocket will be triggered at ready_for_pickup.`);
         }
         break;
       }
 
       // ── payment.failed ────────────────────────────────────────────────────
-      // Stock was never deducted (order was 'pending') — do NOT restore.
+      // Mark Payment as failed. No Order exists to cancel.
       case "payment.failed": {
         const payment = await Payment.findOne({
           razorpayOrderId: payload.order_id,
@@ -253,22 +348,7 @@ const razorpayWebhook = async (req, res) => {
           $set: { status: "failed", webhookPayload: payload },
         });
 
-        await Order.findOneAndUpdate(
-          { _id: payment.orderId, status: "pending" },
-          {
-            $set: { status: "cancelled" },
-            $push: {
-              statusHistory: {
-                status: "cancelled",
-                note: `Payment failed. Auto-cancelled. Razorpay reason: ${payload.error_description || "unknown"}`,
-              },
-            },
-          },
-        );
-
-        logger.info(
-          `[razorpayWebhook] Payment failed for order ${payment.orderId}`,
-        );
+        logger.info(`[razorpayWebhook] Payment failed for razorpayOrderId ${payload.order_id}`);
         break;
       }
 
@@ -284,7 +364,7 @@ const razorpayWebhook = async (req, res) => {
               refundedAt: new Date(),
               refundAmount: refundPayload.amount,
             },
-          },
+          }
         );
         break;
       }
@@ -293,7 +373,6 @@ const razorpayWebhook = async (req, res) => {
         logger.info(`[razorpayWebhook] Unhandled event: ${eventType}`);
     }
   } catch (err) {
-    // Log but return 200 — Razorpay must not keep retrying
     logger.error(`[razorpayWebhook] Error processing event ${eventType}:`, err);
   }
 

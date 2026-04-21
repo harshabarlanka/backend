@@ -1,48 +1,57 @@
 /**
- * Abandoned Orders Cleanup Cron
+ * Abandoned Payments Cleanup Cron
  *
- * Cancels orders that have been in 'pending' status for more than 24 hours.
- * These are Razorpay orders where the user never completed payment.
+ * Previously this cron cancelled Order documents that were stuck in "pending"
+ * status. With the payment-first flow, there are no "pending" Order documents
+ * any more. Instead, we clean up Payment records that were created but never
+ * captured (user initiated checkout, got Razorpay order, but never paid).
  *
- * Runs every hour. Register in server.js.
+ * What this does:
+ *   - Finds Payment records with status "created" older than 24 hours
+ *   - Marks them "failed" for audit purposes
+ *   - Logs the count (no Order to cancel since none was ever created)
+ *
+ * Runs every hour. Registered in server.js.
  */
-const cron   = require('node-cron');
-const Order  = require('../models/Order.model');
-const logger = require('../utils/logger');
+const cron = require("node-cron");
+const Payment = require("../models/Payment.model");
+const logger = require("../utils/logger");
 
 let isRunning = false;
 
-const job = cron.schedule('0 * * * *', async () => {
+const job = cron.schedule("0 * * * *", async () => {
   if (isRunning) return;
   isRunning = true;
 
   try {
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-    const result = await Order.updateMany(
-      { status: 'pending', createdAt: { $lt: cutoff } },
+    // Mark abandoned (never-captured) Payment records as failed.
+    // These are safe to expire — no Order was ever written to the DB for them.
+    const result = await Payment.updateMany(
       {
-        $set: { status: 'cancelled' },
-        $push: {
-          statusHistory: {
-            status: 'cancelled',
-            note:   'Auto-cancelled: payment not completed within 24 hours.',
-          },
-        },
+        status: "created",
+        orderId: null, // only pre-order payments (no Order linked yet)
+        createdAt: { $lt: cutoff },
+      },
+      {
+        $set: { status: "failed" },
       }
     );
 
     if (result.modifiedCount > 0) {
-      logger.info(`[AbandonedOrders Cron] Cancelled ${result.modifiedCount} abandoned orders`);
+      logger.info(
+        `[AbandonedPayments Cron] Expired ${result.modifiedCount} abandoned payment records (no orders were created for these).`
+      );
     }
   } catch (err) {
-    logger.error('[AbandonedOrders Cron] Error:', { error: err.message });
+    logger.error("[AbandonedPayments Cron] Error:", { error: err.message });
   } finally {
     isRunning = false;
   }
 }, {
-  timezone: 'Asia/Kolkata',
+  timezone: "Asia/Kolkata",
 });
 
-logger.info('[AbandonedOrders Cron] Scheduled: every hour (IST)');
+logger.info("[AbandonedPayments Cron] Scheduled: every hour (IST)");
 module.exports = job;

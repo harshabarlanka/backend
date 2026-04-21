@@ -196,11 +196,12 @@ const schemas = {
   updateOrderStatus: Joi.object({
     status: Joi.string()
       .valid(
-        "confirmed",
-        "packed",
+        "preparing",
         "shipped",
+        "out_for_delivery",
         "delivered",
         "cancelled",
+        "rto",
         "refunded",
       )
       .required(),

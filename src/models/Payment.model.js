@@ -2,10 +2,11 @@ const mongoose = require("mongoose");
 
 const paymentSchema = new mongoose.Schema(
   {
+    // orderId is null until order is created post-payment-verification
     orderId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Order",
-      required: true,
+      default: null,
     },
     userId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -13,7 +14,6 @@ const paymentSchema = new mongoose.Schema(
       required: true,
     },
 
-    // COD REMOVED
     method: {
       type: String,
       enum: ["razorpay"],
@@ -21,7 +21,7 @@ const paymentSchema = new mongoose.Schema(
       required: true,
     },
 
-    // Amount in paise (INR × 100) — always
+    // Amount in paise (INR × 100)
     amount: { type: Number, required: true },
     currency: { type: String, default: "INR" },
 
@@ -36,6 +36,14 @@ const paymentSchema = new mongoose.Schema(
     razorpayPaymentId: { type: String, default: null },
     razorpaySignature: { type: String, default: null, select: false },
 
+    // Pending order metadata — stored here before the Order document is created.
+    // Cleared (kept for audit) after order creation.
+    pendingOrderMeta: {
+      type: Object,
+      default: null,
+      select: false, // never expose to client
+    },
+
     // Refund
     refundId: { type: String, default: null },
     refundedAt: { type: Date, default: null },
@@ -43,7 +51,7 @@ const paymentSchema = new mongoose.Schema(
 
     paidAt: { type: Date, default: null },
 
-    // Raw webhook payload for audit — never expose to client
+    // Raw webhook payload for audit
     webhookPayload: { type: Object, default: null, select: false },
   },
   { timestamps: true },
@@ -51,7 +59,7 @@ const paymentSchema = new mongoose.Schema(
 
 paymentSchema.index({ orderId: 1 });
 paymentSchema.index({ userId: 1 });
-paymentSchema.index({ razorpayOrderId: 1 });
+paymentSchema.index({ razorpayOrderId: 1 }, { unique: true, sparse: true });
 paymentSchema.index({ razorpayPaymentId: 1 });
 
 module.exports = mongoose.model("Payment", paymentSchema);

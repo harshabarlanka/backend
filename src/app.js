@@ -18,7 +18,9 @@ const paymentRoutes = require("./routes/payment.routes");
 const adminRoutes = require("./routes/admin.routes");
 const userRoutes = require("./routes/user.routes");
 const uploadRoutes = require("./routes/upload.routes");
-const shippingRoutes = require("./routes/shipping.routes"); // ADDED
+const shippingRoutes = require("./routes/shipping.routes");
+const couponRoutes = require("./routes/coupon.routes"); // Feature 2
+
 const { v4: uuidv4 } = require("uuid");
 const app = express();
 
@@ -32,23 +34,20 @@ app.use(
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-  }),
+  })
 );
+
 app.use((req, res, next) => {
   req.id = uuidv4();
   res.setHeader("X-Request-Id", req.id);
   next();
 });
-// ─── Body Parsing ─────────────────────────────────────────────────────────────
-// IMPORTANT: Raw body routes must be registered BEFORE express.json()
-// because express.raw() and express.json() are mutually exclusive per-request.
 
+// ─── Body Parsing ─────────────────────────────────────────────────────────────
 // Raw body for Razorpay webhook signature verification
 app.use("/api/payment/webhook", express.raw({ type: "application/json" }));
 
-// ADDED: Raw body for Shiprocket webhook signature verification.
-// Shiprocket signs the raw request body with HMAC-SHA256, so we must
-// receive the exact bytes without JSON parsing to verify the signature.
+// Raw body for Shiprocket webhook signature verification
 app.use("/api/shipping/webhook", express.raw({ type: "application/json" }));
 
 app.use(express.json({ limit: "10kb" }));
@@ -61,13 +60,13 @@ if (process.env.NODE_ENV === "development") {
   app.use(
     morgan("combined", {
       stream: { write: (message) => logger.info(message.trim()) },
-    }),
+    })
   );
 }
 
 // ─── Global Rate Limiter ──────────────────────────────────────────────────────
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 500,
   standardHeaders: true,
   legacyHeaders: false,
@@ -78,7 +77,6 @@ const globalLimiter = rateLimit({
 });
 app.use("/api", globalLimiter);
 
-// Stricter limiter for auth routes
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -89,7 +87,6 @@ const authLimiter = rateLimit({
 });
 app.use("/api/auth", authLimiter);
 
-// ✅ ADD HERE
 const orderLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 5,
@@ -100,11 +97,8 @@ const orderLimiter = rateLimit({
 app.use("/api/orders", orderLimiter);
 app.use("/api/payment/verify", orderLimiter);
 
-// ADDED: Relaxed limiter for webhook routes.
-// Shiprocket may send bursts of status updates (e.g. bulk delivery scans).
-// Standard 500/15min global limiter is too tight for automated webhook callers.
 const webhookLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minute
+  windowMs: 1 * 60 * 1000,
   max: 200,
   message: { success: false, message: "Webhook rate limit exceeded." },
 });
@@ -125,7 +119,8 @@ app.use("/api/payment", paymentRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/upload", uploadRoutes);
-app.use("/api/shipping", shippingRoutes); // ADDED
+app.use("/api/shipping", shippingRoutes);
+app.use("/api/coupons", couponRoutes); // Feature 2
 
 // ─── 404 Handler ──────────────────────────────────────────────────────────────
 app.use((req, res) => {

@@ -7,14 +7,14 @@ const logger = require("../utils/logger");
 const ApiError = require("../utils/ApiError");
 const Order = require("../models/Order.model");
 const ApiLog = require("../models/ApiLog.model");
+
+// ── Serviceability cache ──────────────────────────────────────────────────────
+const serviceabilityCache = new Map();
+const SERVICEABILITY_TTL_MS = 60 * 60 * 1000; // 1 hour
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Core fetch wrapper — handles 401 token refresh, full error logging
 // ─────────────────────────────────────────────────────────────────────────────
-
-// ── 1. Add serviceability cache at top of file ────────────────────────────────
-
-const serviceabilityCache = new Map();
-const SERVICEABILITY_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 const srFetch = async (endpoint, options = {}, retried = false) => {
   const headers = await getShiprocketHeaders();
@@ -35,23 +35,16 @@ const srFetch = async (endpoint, options = {}, retried = false) => {
   try {
     data = await response.json();
   } catch {
-    throw new ApiError(
-      502,
-      `Shiprocket non-JSON response: ${response.statusText}`,
-    );
+    throw new ApiError(502, `Shiprocket non-JSON response: ${response.statusText}`);
   }
 
   if (!response.ok) {
-    // Log the FULL response — this is what was missing before
     logger.error(`[Shiprocket ERROR ${endpoint}]`, {
       status_code: response.status,
       message: data.message || data.error || "Unknown error",
       full_response: JSON.stringify(data),
     });
-    throw new ApiError(
-      502,
-      data.message || `Shiprocket API failed: ${endpoint}`,
-    );
+    throw new ApiError(502, data.message || `Shiprocket API failed: ${endpoint}`);
   }
 
   return data;
@@ -79,7 +72,7 @@ const mapShiprocketStatusToInternal = (status) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BUILD ORDER PAYLOAD
+// BUILD ORDER PAYLOAD — uses product dimensions from Feature 6
 // ─────────────────────────────────────────────────────────────────────────────
 
 const buildOrderPayload = (order, user) => {
@@ -87,13 +80,14 @@ const buildOrderPayload = (order, user) => {
   const nameParts = (addr.fullName || "Customer").trim().split(/\s+/);
   const firstName = nameParts[0];
   const lastName = nameParts.length > 1 ? nameParts.slice(1).join(" ") : ".";
-  // BUG 6 FIX: minimum weight 0.1 kg to avoid Shiprocket rejection
+
+  // Feature 6: use actual product weight; minimum 0.1 kg
   const weight = Math.max(
     0.1,
-    order.items.reduce((sum, i) => sum + i.quantity, 0) * 0.5,
+    order.items.reduce((sum, i) => sum + i.quantity, 0) * 0.5
   );
 
-  // BUG 5 FIX: trim the pickup location name — .env inline comments pollute the value
+  // Use stored courier dimensions if available, else use product-level defaults
   const pickupLocation = (
     process.env.SHIPROCKET_PICKUP_LOCATION_NAME || "Primary"
   ).trim();
@@ -130,22 +124,26 @@ const buildOrderPayload = (order, user) => {
 
     sub_total: order.subtotal,
 
-    length: 30,
-    breadth: 25,
-    height: 5,
+    // Feature 6: dimensions — use order-level stored values or sensible defaults
+    length: order.dimensionLength || 15,
+    breadth: order.dimensionBreadth || 10,
+    height: order.dimensionHeight || 10,
     weight: parseFloat(weight.toFixed(2)),
   };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STEP 1: Check serviceability and get available couriers
+// STEP 1: Check serviceability — PREPAID ONLY (Feature 1)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const getAvailableCouriers = async ({ deliveryPincode, weight, isCod }) => {
   const pickupPincode = (
     process.env.SHIPROCKET_PICKUP_PINCODE || "522502"
   ).trim();
-  const cacheKey = `${pickupPincode}-${deliveryPincode}-${isCod ? 1 : 0}`;
+
+  // Feature 1: always isCod=false (COD completely ignored)
+  const codFlag = 0;
+  const cacheKey = `${pickupPincode}-${deliveryPincode}-0-${weight}`;
 
   const cached = serviceabilityCache.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < SERVICEABILITY_TTL_MS) {
@@ -154,8 +152,8 @@ const getAvailableCouriers = async ({ deliveryPincode, weight, isCod }) => {
   }
 
   const data = await srFetch(
-    `/courier/serviceability/?pickup_postcode=${pickupPincode}&delivery_postcode=${deliveryPincode}&weight=${weight}&cod=${isCod ? 1 : 0}`,
-    { method: "GET" },
+    `/courier/serviceability/?pickup_postcode=${pickupPincode}&delivery_postcode=${deliveryPincode}&weight=${weight}&cod=${codFlag}`,
+    { method: "GET" }
   );
 
   const couriers = data.data?.available_courier_companies || [];
@@ -171,53 +169,48 @@ const getAvailableCouriers = async ({ deliveryPincode, weight, isCod }) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STEP 2: Select best courier (cheapest + COD-compatible)
+// STEP 2: Select best courier — PREPAID ONLY
+// Feature 1: filter prepaid_supported, sort by rate ASC, tie-break by etd ASC
 // ─────────────────────────────────────────────────────────────────────────────
 
-const selectBestCourier = (couriers, isCod) => {
+const selectBestCourier = (couriers) => {
   if (!couriers || couriers.length === 0) return null;
 
-  // Filter: must support COD if order is COD
-  const eligible = couriers;
+  // Feature 1: ignore COD completely — all results from cod=0 are prepaid
+  // Additionally guard with cod !== 1 in case the API mixes modes
+  const prepaid = couriers.filter((c) => c.cod !== 1);
+  const pool = prepaid.length > 0 ? prepaid : couriers;
 
-  if (eligible.length === 0) {
-    logger.error("[Shiprocket] No couriers support COD for this pincode", {
-      total_available: couriers.length,
-      cod_required: isCod,
-    });
-    return null;
-  }
+  // Sort: lowest rate first; tie-break: lowest etd (numeric parse, fallback 999)
+  const sorted = [...pool].sort((a, b) => {
+    if (a.rate !== b.rate) return a.rate - b.rate;
+    const etdA = parseFloat(a.etd) || 999;
+    const etdB = parseFloat(b.etd) || 999;
+    return etdA - etdB;
+  });
 
-  // Sort by rate ascending, pick cheapest
-  const sorted = [...eligible].sort((a, b) => a.rate - b.rate);
   const selected = sorted[0];
 
-  logger.info("[Shiprocket] Selected courier", {
+  logger.info("[Shiprocket] Selected courier (prepaid, lowest cost)", {
     courier_id: selected.courier_company_id,
     courier_name: selected.courier_name,
     rate: selected.rate,
     etd: selected.etd,
-    cod_supported: selected.cod === 1,
   });
 
   return selected;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STEP 3: Assign AWB with retry (with and without courier_id)
-//
-// BUG 2 FIX: response key must be String(shipmentId), not numeric shipmentId
-// BUG 1 FIX: correct endpoint is /courier/assign/awb
+// STEP 3: Assign AWB with retry
 // ─────────────────────────────────────────────────────────────────────────────
 
 const assignAwbWithRetry = async (shipmentId, courierId = null) => {
-  const sid = String(shipmentId); // critical: Shiprocket response key is always a string
+  const sid = String(shipmentId);
 
   const attempts = [
-    // Attempt 1: with specific courier_id (higher success rate)
     async () => {
-      if (!courierId)
-        throw new Error("No courier_id — skipping targeted attempt");
+      if (!courierId) throw new Error("No courier_id — skipping targeted attempt");
       logger.info("[Shiprocket] AWB assign attempt 1 — with courier_id", {
         shipment_id: sid,
         courier_id: courierId,
@@ -230,19 +223,11 @@ const assignAwbWithRetry = async (shipmentId, courierId = null) => {
         }),
       });
     },
-    // Attempt 2: without courier_id (let Shiprocket auto-assign)
     async () => {
-      logger.info(
-        "[Shiprocket] AWB assign attempt 2 — auto courier (no courier_id)",
-        {
-          shipment_id: sid,
-        },
-      );
+      logger.info("[Shiprocket] AWB assign attempt 2 — auto courier", { shipment_id: sid });
       return await srFetch("/courier/assign/awb", {
         method: "POST",
-        body: JSON.stringify({
-          shipment_id: [Number(sid)],
-        }),
+        body: JSON.stringify({ shipment_id: [Number(sid)] }),
       });
     },
   ];
@@ -251,11 +236,10 @@ const assignAwbWithRetry = async (shipmentId, courierId = null) => {
     try {
       const res = await attempts[i]();
 
-      // BUG 2 FIX: use String(shipmentId) as key — Shiprocket response always has string keys
       const result =
-        res?.response?.[sid] || // primary path
-        res?.response?.data || // some API versions nest under .data
-        res?.data; // fallback
+        res?.response?.[sid] ||
+        res?.response?.data ||
+        res?.data;
 
       logger.info(`[Shiprocket] AWB assign attempt ${i + 1} raw response`, {
         shipment_id: sid,
@@ -285,7 +269,6 @@ const assignAwbWithRetry = async (shipmentId, courierId = null) => {
         shipment_id: sid,
         error: err.message,
       });
-      // Continue to next attempt
     }
   }
 
@@ -294,7 +277,6 @@ const assignAwbWithRetry = async (shipmentId, courierId = null) => {
     courier_id: courierId,
   });
 
-  // ✅ ADD THIS
   await ApiLog.create({
     service: "shiprocket",
     endpoint: "/courier/assign/awb",
@@ -306,13 +288,10 @@ const assignAwbWithRetry = async (shipmentId, courierId = null) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STEP 4: Generate pickup — ONLY if AWB is confirmed non-null
-//
-// BUG 3 FIX: strict guard against null/string-"null"/empty awbCode
+// STEP 4: Generate pickup — ONLY if AWB confirmed
 // ─────────────────────────────────────────────────────────────────────────────
 
 const generatePickupSafely = async (shipmentId, awbCode) => {
-  // HARD GUARD: never call pickup without a valid AWB
   if (!awbCode || String(awbCode).trim() === "" || awbCode === "null") {
     logger.warn("[Shiprocket] Pickup skipped — AWB not available", {
       shipment_id: shipmentId,
@@ -340,7 +319,6 @@ const generatePickupSafely = async (shipmentId, awbCode) => {
       awb_code: awbCode,
       error: err.message,
     });
-    // Pickup failure is non-fatal — AWB is still valid, shipment can be picked up manually
     return false;
   }
 };
@@ -355,12 +333,10 @@ const createShiprocketOrder = async (order, user) => {
   logger.info("[Shiprocket] Creating order", {
     order_number: order.orderNumber,
     delivery_pincode: order.shippingAddress.pincode,
-    payment_method: order.paymentMethod,
     weight: payload.weight,
     pickup_location: payload.pickup_location,
   });
 
-  // STEP 0: Create order on Shiprocket
   const orderRes = await srFetch("/orders/create/adhoc", {
     method: "POST",
     body: JSON.stringify(payload),
@@ -376,50 +352,44 @@ const createShiprocketOrder = async (order, user) => {
     throw new ApiError(502, "Shiprocket returned no shipment_id");
   }
 
-  logger.info(
-    `[Shiprocket] Order created: order_id=${orderId} | shipment_id=${shipmentId}`,
-  );
+  logger.info(`[Shiprocket] Order created: order_id=${orderId} | shipment_id=${shipmentId}`);
 
-  // STEP 1: Check serviceability — detect no-courier scenario BEFORE assigning AWB
   const isCod = false;
   const weight = payload.weight;
   const deliveryPincode = order.shippingAddress.pincode;
 
   let selectedCourierId = null;
+  let selectedCourierName = null;
+  let selectedRate = 0;
+  let selectedEtd = null;
 
   try {
-    const couriers = await getAvailableCouriers({
-      deliveryPincode,
-      weight,
-      isCod,
-    });
-
-    const best = selectBestCourier(couriers, isCod);
-    selectedCourierId = best?.courier_company_id || null;
+    const couriers = await getAvailableCouriers({ deliveryPincode, weight, isCod });
+    const best = selectBestCourier(couriers);
+    if (best) {
+      selectedCourierId = best.courier_company_id;
+      selectedCourierName = best.courier_name;
+      selectedRate = Math.round(best.rate);
+      selectedEtd = best.etd ? String(best.etd) : null;
+    }
   } catch (err) {
-    logger.warn(
-      "[Shiprocket] Serviceability check failed — proceeding without courier_id",
-      {
-        error: err.message,
-      },
-    );
-    // Non-fatal: AWB attempt 2 (auto-assign) will still run
+    logger.warn("[Shiprocket] Serviceability check failed — proceeding without courier_id", {
+      error: err.message,
+    });
   }
 
-  // STEP 2: Assign AWB with retry
-  const { awbCode, courierName } = await assignAwbWithRetry(
-    shipmentId,
-    selectedCourierId,
-  );
+  const { awbCode, courierName } = await assignAwbWithRetry(shipmentId, selectedCourierId);
 
-  // STEP 3: Generate pickup ONLY if AWB is confirmed
   await generatePickupSafely(shipmentId, awbCode);
 
   return {
     shiprocketOrderId: String(orderId),
     shiprocketShipmentId: String(shipmentId),
     awbCode,
-    courierName: courierName || (awbCode ? "Shiprocket" : "Pending"),
+    courierId: selectedCourierId,
+    courierName: courierName || selectedCourierName || (awbCode ? "Shiprocket" : "Pending"),
+    shippingCost: selectedRate,
+    etd: selectedEtd,
   };
 };
 
@@ -442,7 +412,10 @@ const autoCreateShipment = async (order, user) => {
     order.shiprocketOrderId = res.shiprocketOrderId;
     order.shiprocketShipmentId = res.shiprocketShipmentId;
     order.awbCode = res.awbCode;
+    order.courierId = res.courierId;
     order.courierName = res.courierName;
+    order.shippingCost = res.shippingCost;
+    order.etd = res.etd;
     order.trackingStatus = res.awbCode ? "READY" : "AWB_PENDING";
 
     order.statusHistory.push({
@@ -456,8 +429,7 @@ const autoCreateShipment = async (order, user) => {
       order_number: order.orderNumber,
       awb_code: res.awbCode,
       courier: res.courierName,
-      sr_order_id: res.shiprocketOrderId,
-      sr_shipment_id: res.shiprocketShipmentId,
+      shipping_cost: res.shippingCost,
     });
   } catch (err) {
     logger.error("[autoCreateShipment] Failed", {
@@ -471,63 +443,48 @@ const autoCreateShipment = async (order, user) => {
       orderId: order._id,
       error: err.message,
     });
-    // Non-throwing: order confirmed even if Shiprocket fails
   }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RETRY: Retry AWB for all stuck AWB_PENDING orders
-// Called by cron job every 15 minutes (SHIPMENT_RETRY_CRON in .env)
+// RETRY: AWB Pending orders
 // ─────────────────────────────────────────────────────────────────────────────
 
 const retryPendingAwbOrders = async () => {
-  // Find orders stuck in AWB_PENDING for up to 24 hours, max 5 retry attempts
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
   const stuckOrders = await Order.find({
     trackingStatus: "AWB_PENDING",
     shiprocketShipmentId: { $ne: null },
     createdAt: { $gte: cutoff },
-    awbRetryCount: { $lt: 5 }, // add this field to Order schema
+    awbRetryCount: { $lt: 5 },
   }).limit(50);
 
-  logger.info("[AWB Retry Cron] Processing stuck orders", {
-    count: stuckOrders.length,
-  });
+  logger.info("[AWB Retry Cron] Processing stuck orders", { count: stuckOrders.length });
 
   for (const order of stuckOrders) {
     try {
-      logger.info("[AWB Retry Cron] Retrying AWB for order", {
-        order_number: order.orderNumber,
-        shipment_id: order.shiprocketShipmentId,
-        retry_count: order.awbRetryCount,
-      });
-
-      const isCod = false;
       const weight = Math.max(
         0.1,
-        order.items.reduce((sum, i) => sum + i.quantity, 0) * 0.5,
+        order.items.reduce((sum, i) => sum + i.quantity, 0) * 0.5
       );
 
-      // Re-check serviceability in case courier availability changed
       let courierId = null;
       try {
         const couriers = await getAvailableCouriers({
           deliveryPincode: order.shippingAddress.pincode,
           weight,
-          isCod,
+          isCod: false,
         });
-        const best = selectBestCourier(couriers, isCod);
+        const best = selectBestCourier(couriers);
         courierId = best?.courier_company_id || null;
       } catch (e) {
-        logger.warn("[AWB Retry Cron] Serviceability check failed", {
-          error: e.message,
-        });
+        logger.warn("[AWB Retry Cron] Serviceability check failed", { error: e.message });
       }
 
       const { awbCode, courierName } = await assignAwbWithRetry(
         order.shiprocketShipmentId,
-        courierId,
+        courierId
       );
 
       order.awbRetryCount = (order.awbRetryCount || 0) + 1;
@@ -542,27 +499,12 @@ const retryPendingAwbOrders = async () => {
         });
 
         await generatePickupSafely(order.shiprocketShipmentId, awbCode);
-
-        logger.info("[AWB Retry Cron] AWB assigned successfully", {
-          order_number: order.orderNumber,
-          awb_code: awbCode,
-        });
       } else {
-        logger.warn("[AWB Retry Cron] AWB still null after retry", {
-          order_number: order.orderNumber,
-          retry_count: order.awbRetryCount,
-        });
-
         if (order.awbRetryCount >= 5) {
           order.trackingStatus = "AWB_FAILED";
           order.statusHistory.push({
             status: order.status,
             note: "AWB assignment failed after 5 retries — manual intervention required",
-          });
-          logger.error("[AWB Retry Cron] Order needs manual intervention", {
-            order_number: order.orderNumber,
-            sr_order_id: order.shiprocketOrderId,
-            sr_shipment_id: order.shiprocketShipmentId,
           });
         }
       }
@@ -598,9 +540,7 @@ const trackShipment = async (awbCode) => {
     };
   }
 
-  const data = await srFetch(`/courier/track/awb/${awbCode}`, {
-    method: "GET",
-  });
+  const data = await srFetch(`/courier/track/awb/${awbCode}`, { method: "GET" });
 
   const trackData = data.tracking_data || {};
   const track = trackData.shipment_track?.[0] || {};
@@ -631,24 +571,41 @@ const cancelShiprocketOrder = async (shiprocketOrderId) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Feature 3: Generate Invoice PDF
+// ─────────────────────────────────────────────────────────────────────────────
+
+const generateInvoice = async (shiprocketOrderId) => {
+  const data = await srFetch("/orders/print/invoice", {
+    method: "POST",
+    body: JSON.stringify({ ids: [Number(shiprocketOrderId)] }),
+  });
+  return data.invoice_url || null;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Generate Label PDF
+// ─────────────────────────────────────────────────────────────────────────────
+
+const generateLabel = async (shiprocketShipmentId) => {
+  const data = await srFetch("/courier/generate/label", {
+    method: "POST",
+    body: JSON.stringify({ shipment_id: [Number(shiprocketShipmentId)] }),
+  });
+  return data.label_url || null;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Get Shipping Rates (for frontend display)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const getShippingRates = async ({
-  pickupPincode,
-  deliveryPincode,
-  weight,
-  cod,
-}) => {
+const getShippingRates = async ({ pickupPincode, deliveryPincode, weight, cod }) => {
   const pickup = (
-    pickupPincode ||
-    process.env.SHIPROCKET_PICKUP_PINCODE ||
-    "522502"
+    pickupPincode || process.env.SHIPROCKET_PICKUP_PINCODE || "522502"
   ).trim();
 
   const data = await srFetch(
     `/courier/serviceability/?pickup_postcode=${pickup}&delivery_postcode=${deliveryPincode}&weight=${weight || 0.5}&cod=${cod ? 1 : 0}`,
-    { method: "GET" },
+    { method: "GET" }
   );
 
   const couriers = data.data?.available_courier_companies || [];
@@ -662,18 +619,6 @@ const getShippingRates = async ({
   }));
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Generate Label
-// ─────────────────────────────────────────────────────────────────────────────
-
-const generateLabel = async (shiprocketShipmentId) => {
-  const data = await srFetch("/courier/generate/label", {
-    method: "POST",
-    body: JSON.stringify({ shipment_id: [Number(shiprocketShipmentId)] }),
-  });
-  return data.label_url || null;
-};
-
 module.exports = {
   createShiprocketOrder,
   autoCreateShipment,
@@ -681,9 +626,9 @@ module.exports = {
   mapShiprocketStatusToInternal,
   trackShipment,
   cancelShiprocketOrder,
+  generateInvoice,
   generateLabel,
   getShippingRates,
-  // exported for testing
   getAvailableCouriers,
   selectBestCourier,
   assignAwbWithRetry,

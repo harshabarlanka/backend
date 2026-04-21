@@ -1,4 +1,4 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
 
 const {
@@ -7,18 +7,18 @@ const {
   getOrder,
   cancelOrder,
   trackOrder,
-} = require('../controllers/order.controller');
+} = require("../controllers/order.controller");
 
-const { protect } = require('../middleware/auth.middleware');
-const { validate, schemas } = require('../middleware/validate.middleware');
+const { protect } = require("../middleware/auth.middleware");
+const { validate, schemas } = require("../middleware/validate.middleware");
 
 // All order routes require authentication
 router.use(protect);
 
-router.post('/', validate(schemas.placeOrder), placeOrder);
-router.get('/', getMyOrders);
-router.get('/:id', getOrder);
-router.post('/:id/cancel', cancelOrder);
-router.get('/:id/track', trackOrder);
+router.post("/", validate(schemas.placeOrder), placeOrder);
+router.get("/", getMyOrders);
+router.get("/:id", getOrder);
+router.post("/:id/cancel", cancelOrder);
+router.get("/:id/track", trackOrder);
 
 module.exports = router;
