@@ -13,6 +13,8 @@ const required = [
   'SHIPROCKET_PICKUP_LOCATION_NAME',
   'SHIPROCKET_PICKUP_PINCODE',
   'CLIENT_URL',
+  // Audit fix 1.6: Required in production to prevent webhook bypass
+  'SHIPROCKET_WEBHOOK_SECRET',
 ];
 
 const validateEnv = () => {

@@ -34,7 +34,7 @@ app.use(
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-  })
+  }),
 );
 
 app.use((req, res, next) => {
@@ -60,7 +60,7 @@ if (process.env.NODE_ENV === "development") {
   app.use(
     morgan("combined", {
       stream: { write: (message) => logger.info(message.trim()) },
-    })
+    }),
   );
 }
 
@@ -89,8 +89,7 @@ app.use("/api/auth", authLimiter);
 
 const orderLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 5,
-  message: { success: false, message: "Too many order attempts." },
+  max: 60,
   keyGenerator: (req) => req.user?._id?.toString() || req.ip,
 });
 

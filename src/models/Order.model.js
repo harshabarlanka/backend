@@ -1,74 +1,88 @@
-const mongoose = require("mongoose");
+const mongoose = require('mongoose');
 
+// ── Order Item ───────────────────────────────────────────────────────────────
 const orderItemSchema = new mongoose.Schema(
   {
     productId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Product",
+      ref: 'Product',
       required: true,
     },
     variantId: { type: mongoose.Schema.Types.ObjectId, required: true },
     name: { type: String, required: true },
     size: { type: String, required: true },
-    image: { type: String, default: "" },
+    image: { type: String, default: '' },
     price: { type: Number, required: true },
     quantity: { type: Number, required: true, min: 1 },
+    // Actual product weight in grams — used for Shiprocket payload (audit fix 5.4)
+    weightGrams: { type: Number, default: 500 },
   },
-  { _id: true }
+  { _id: true },
 );
 
+// ── Shipping Address ─────────────────────────────────────────────────────────
 const shippingAddressSchema = new mongoose.Schema(
   {
     fullName: { type: String, required: true },
     phone: { type: String, required: true },
     addressLine1: { type: String, required: true },
-    addressLine2: { type: String, default: "" },
+    addressLine2: { type: String, default: '' },
     city: { type: String, required: true },
     state: { type: String, required: true },
     pincode: { type: String, required: true },
-    country: { type: String, default: "India" },
+    country: { type: String, default: 'India' },
   },
-  { _id: false }
+  { _id: false },
 );
 
+// ── Status History ───────────────────────────────────────────────────────────
 const statusHistorySchema = new mongoose.Schema(
   {
     status: { type: String, required: true },
-    note: { type: String, default: "" },
-    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    note: { type: String, default: '' },
+    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     changedAt: { type: Date, default: Date.now },
   },
-  { _id: false }
+  { _id: false },
 );
 
+// ── Tracking Events ──────────────────────────────────────────────────────────
 const trackingEventSchema = new mongoose.Schema(
   {
     timestamp: { type: Date, required: true },
     status: { type: String, required: true },
-    location: { type: String, default: "" },
-    activity: { type: String, default: "" },
+    location: { type: String, default: '' },
+    activity: { type: String, default: '' },
   },
-  { _id: false }
+  { _id: false },
 );
 
+// ── Main Order Schema ─────────────────────────────────────────────────────────
 const orderSchema = new mongoose.Schema(
   {
-    orderNumber: { type: String, unique: true, required: true },
+    orderNumber: {
+      type: String,
+      unique: true, // ✅ creates unique index
+      required: true,
+    },
 
-    // Idempotency: prevents duplicate orders from double-click or network retry
-    idempotencyKey: { type: String, sparse: true, unique: true },
+    // Prevent duplicate orders
+    idempotencyKey: {
+      type: String,
+      sparse: true,
+      unique: true, // ✅ unique index
+    },
 
     userId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
+      ref: 'User',
     },
 
     items: {
       type: [orderItemSchema],
       validate: [
         (arr) => arr.length > 0,
-        "Order must contain at least one item",
+        'Order must contain at least one item',
       ],
     },
 
@@ -76,83 +90,86 @@ const orderSchema = new mongoose.Schema(
 
     paymentMethod: {
       type: String,
-      enum: ["razorpay"],
-      default: "razorpay",
+      enum: ['razorpay'],
+      default: 'razorpay',
       required: true,
     },
 
-    paymentId: { type: mongoose.Schema.Types.ObjectId, ref: "Payment" },
+    paymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment' },
 
+    // ── Order Status ─────────────────────────────────────────────────────────
     status: {
       type: String,
       enum: [
-        // Payment states
-        "confirmed",      // payment captured — order confirmed, awaiting preparation
-        // Preparation states (made-to-order flow)
-        "preparing",      // admin started preparation
-        "ready_for_pickup", // admin marked ready — triggers Shiprocket
-        // Shipment states
-        "shipped",
-        "out_for_delivery",
-        "delivered",
-        // Terminal states
-        "cancelled",
-        "rto",
-        "refunded",
+        'confirmed',
+        'preparing',
+        'ready_for_pickup',
+        'shipped',
+        'out_for_delivery',
+        'delivered',
+        'cancelled',
+        'rto',
+        'refunded',
       ],
-      default: "confirmed",
+      default: 'confirmed',
     },
 
     statusHistory: [statusHistorySchema],
 
-    // ── Shiprocket Fields ──────────────────────────────────────────────────────
+    // ── Shiprocket ───────────────────────────────────────────────────────────
     shiprocketOrderId: { type: String, default: null },
     shiprocketShipmentId: { type: String, default: null },
     awbCode: { type: String, default: null },
 
-    // ── Courier Selection ──────────────────────────────────────────────────────
     courierId: { type: Number, default: null },
     courierName: { type: String, default: null },
     shippingCost: { type: Number, default: 0 },
     etd: { type: String, default: null },
 
-    // Raw status string from Shiprocket
     trackingStatus: { type: String, default: null },
     trackingUpdatedAt: { type: Date, default: null },
-
-    // Full tracking event log
     trackingHistory: { type: [trackingEventSchema], default: [] },
 
-    // Estimated delivery date from Shiprocket
     estimatedDeliveryDate: { type: Date, default: null },
 
-    // AWB retry cron tracking
     awbRetryCount: { type: Number, default: 0 },
 
-    // ── Invoice / Label PDF cache ─────────────────────────────────────────────
+    // ── RTO fields (audit fix 1.1 / 5.1) ────────────────────────────────────
+    rtoStatus: {
+      type: String,
+      enum: ['none', 'initiated', 'in_transit', 'delivered'],
+      default: 'none',
+    },
+    rtoReason: { type: String, default: null, maxlength: 300 },
+    rtoInitiatedAt: { type: Date, default: null },
+    rtoDeliveredAt: { type: Date, default: null },
+    autoRefundAttempted: { type: Boolean, default: false },
+    autoRefundId: { type: String, default: null },
+
+    // ── Docs ─────────────────────────────────────────────────────────────────
     invoiceUrl: { type: String, default: null },
     labelUrl: { type: String, default: null },
 
-    // ── Coupon ────────────────────────────────────────────────────────────────
+    // ── Coupon ───────────────────────────────────────────────────────────────
     couponCode: { type: String, default: null, uppercase: true },
     couponId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Coupon",
+      ref: 'Coupon',
       default: null,
     },
     discountAmount: { type: Number, default: 0 },
 
-    // ── Pricing ───────────────────────────────────────────────────────────────
+    // ── Pricing ──────────────────────────────────────────────────────────────
     subtotal: { type: Number, required: true },
     shippingCharge: { type: Number, default: 0 },
     tax: { type: Number, default: 0 },
     discount: { type: Number, default: 0 },
     total: { type: Number, required: true },
 
-    notes: { type: String, maxlength: 300, default: "" },
+    notes: { type: String, maxlength: 300, default: '' },
 
-    // ── Cancellation metadata ─────────────────────────────────────────────────
-    cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    // ── Cancellation ─────────────────────────────────────────────────────────
+    cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     cancelledAt: { type: Date },
     cancelReason: { type: String, maxlength: 300 },
   },
@@ -160,27 +177,27 @@ const orderSchema = new mongoose.Schema(
     timestamps: true,
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
-  }
+  },
 );
 
-// ── Indexes ────────────────────────────────────────────────────────────────────
+// ── Indexes (clean, no duplicates) ───────────────────────────────────────────
 orderSchema.index({ userId: 1, createdAt: -1 });
-orderSchema.index({ orderNumber: 1 });
 orderSchema.index({ status: 1, createdAt: -1 });
 orderSchema.index({ awbCode: 1 });
+orderSchema.index({ awbCode: 1, status: 1 }); // 🔥 cron optimization
 orderSchema.index({ shiprocketOrderId: 1 });
 orderSchema.index({ trackingStatus: 1, createdAt: -1, awbRetryCount: 1 });
-orderSchema.index({ idempotencyKey: 1 });
 orderSchema.index({ couponCode: 1 });
+orderSchema.index({ rtoStatus: 1, autoRefundAttempted: 1 }); // audit fix 5.1
 
-orderSchema.virtual("isDelivered").get(function () {
-  return this.status === "delivered";
+// ── Virtuals ─────────────────────────────────────────────────────────────────
+orderSchema.virtual('isDelivered').get(function () {
+  return this.status === 'delivered';
 });
 
-// canCancel: user-facing guard — AWB assigned or beyond confirmed/preparing = no cancel
-orderSchema.virtual("canCancel").get(function () {
+orderSchema.virtual('canCancel').get(function () {
   if (this.awbCode) return false;
-  return ["confirmed", "preparing"].includes(this.status);
+  return ['confirmed', 'preparing'].includes(this.status);
 });
 
-module.exports = mongoose.model("Order", orderSchema);
+module.exports = mongoose.model('Order', orderSchema);

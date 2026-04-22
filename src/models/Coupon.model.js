@@ -5,7 +5,6 @@ const couponSchema = new mongoose.Schema(
     code: {
       type: String,
       required: [true, "Coupon code is required"],
-      unique: true,
       uppercase: true,
       trim: true,
       maxlength: [20, "Code cannot exceed 20 characters"],
@@ -25,7 +24,6 @@ const couponSchema = new mongoose.Schema(
       default: 0,
       min: [0, "Min order amount must be non-negative"],
     },
-    // Only for percentage: caps the rupee discount
     maxDiscount: {
       type: Number,
       default: null,
@@ -36,7 +34,7 @@ const couponSchema = new mongoose.Schema(
     },
     usageLimit: {
       type: Number,
-      default: null, // null = unlimited
+      default: null,
     },
     usageCount: {
       type: Number,
@@ -52,13 +50,14 @@ const couponSchema = new mongoose.Schema(
     timestamps: true,
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
-  }
+  },
 );
 
-couponSchema.index({ code: 1 });
+// ✅ Proper indexes
+couponSchema.index({ code: 1 }, { unique: true });
 couponSchema.index({ active: 1, expiryDate: 1 });
 
-// Virtual: is this coupon currently usable?
+// Virtual
 couponSchema.virtual("isValid").get(function () {
   const now = new Date();
   if (!this.active) return false;
@@ -68,20 +67,20 @@ couponSchema.virtual("isValid").get(function () {
   return true;
 });
 
-/**
- * Calculate the discount amount for a given order subtotal.
- * Returns 0 if the coupon is not applicable.
- */
+// Method
 couponSchema.methods.calculateDiscount = function (orderSubtotal) {
   if (orderSubtotal < this.minOrderAmount) return 0;
+
   if (this.discountType === "flat") {
     return Math.min(this.value, orderSubtotal);
   }
-  // percentage
+
   const raw = (orderSubtotal * this.value) / 100;
+
   if (this.maxDiscount !== null) {
     return Math.min(raw, this.maxDiscount);
   }
+
   return raw;
 };
 

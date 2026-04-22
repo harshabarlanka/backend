@@ -1,24 +1,25 @@
-const Order = require("../models/Order.model");
-const Product = require("../models/Product.model");
-const User = require("../models/User.model");
-const Payment = require("../models/Payment.model");
-const Coupon = require("../models/Coupon.model");
+const mongoose = require('mongoose');
+const Order = require('../models/Order.model');
+const Product = require('../models/Product.model');
+const User = require('../models/User.model');
+const Payment = require('../models/Payment.model');
+const Coupon = require('../models/Coupon.model');
 const {
   createShiprocketOrder,
   cancelShiprocketOrder,
   generateInvoice,
   generateLabel,
-} = require("../services/shiprocket.service");
+} = require('../services/shiprocket.service');
 const {
   sendShipmentEmail,
   sendReviewRequestEmail,
-} = require("../services/email.service");
-const { restoreStock } = require("../utils/stock");
-const ApiError = require("../utils/ApiError");
-const { sendResponse } = require("../utils/ApiResponse");
-const catchAsync = require("../utils/catchAsync");
-const logger = require("../utils/logger");
-const { initiateRefund } = require("../services/razorpay.service");
+} = require('../services/email.service');
+const { restoreStock } = require('../utils/stock');
+const ApiError = require('../utils/ApiError');
+const { sendResponse } = require('../utils/ApiResponse');
+const catchAsync = require('../utils/catchAsync');
+const logger = require('../utils/logger');
+const { initiateRefund } = require('../services/razorpay.service');
 
 // ─── Dashboard Stats ──────────────────────────────────────────────────────────
 
@@ -47,34 +48,33 @@ const getDashboard = catchAsync(async (req, res) => {
       createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth },
     }),
     Order.countDocuments({
-      status: { $in: ["confirmed", "preparing", "ready_for_pickup"] },
+      status: { $in: ['confirmed', 'preparing', 'ready_for_pickup'] },
     }),
-    User.countDocuments({ role: "user" }),
+    User.countDocuments({ role: 'user' }),
     Payment.aggregate([
-      { $match: { status: { $in: ["captured", "cod_collected"] } } },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
+      { $match: { status: { $in: ['captured', 'cod_collected'] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
     ]),
     Payment.aggregate([
       {
         $match: {
-          status: { $in: ["captured", "cod_collected"] },
+          status: { $in: ['captured', 'cod_collected'] },
           createdAt: { $gte: startOfMonth },
         },
       },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
     ]),
-    Product.find({ "variants.stock": { $lte: 10 }, isActive: true })
-      .select("name variants")
+    Product.find({ 'variants.stock': { $lte: 10 }, isActive: true })
+      .select('name variants')
       .limit(5),
     Order.find()
       .sort({ createdAt: -1 })
       .limit(5)
-      .populate("userId", "name email")
-      .select("orderNumber status total paymentMethod createdAt awbCode courierName"),
-    Order.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
-    // Orders ready for pickup but not yet shipped (Shiprocket not yet created)
+      .populate('userId', 'name email')
+      .select('orderNumber status total paymentMethod createdAt awbCode courierName'),
+    Order.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
     Order.countDocuments({
-      status: "ready_for_pickup",
+      status: 'ready_for_pickup',
       awbCode: null,
     }),
   ]);
@@ -84,7 +84,7 @@ const getDashboard = catchAsync(async (req, res) => {
       ? (((monthOrders - lastMonthOrders) / lastMonthOrders) * 100).toFixed(1)
       : 100;
 
-  return sendResponse(res, 200, "Dashboard stats fetched.", {
+  return sendResponse(res, 200, 'Dashboard stats fetched.', {
     stats: {
       totalOrders,
       monthOrders,
@@ -113,17 +113,17 @@ const getAllOrders = catchAsync(async (req, res) => {
     status,
     paymentMethod,
     search,
-    sort = "-createdAt",
+    sort = '-createdAt',
     noAwb,
   } = req.query;
 
   const filter = {};
   if (status) filter.status = status;
   if (paymentMethod) filter.paymentMethod = paymentMethod;
-  if (search) filter.orderNumber = { $regex: search, $options: "i" };
-  if (noAwb === "true") {
+  if (search) filter.orderNumber = { $regex: search, $options: 'i' };
+  if (noAwb === 'true') {
     filter.awbCode = null;
-    filter.status = { $in: ["ready_for_pickup", "shipped"] };
+    filter.status = { $in: ['ready_for_pickup', 'shipped'] };
   }
 
   const pageNum = Math.max(1, Number(page));
@@ -134,17 +134,17 @@ const getAllOrders = catchAsync(async (req, res) => {
       .sort(sort)
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
-      .populate("userId", "name email phone")
-      .populate("paymentId", "status method amount razorpayPaymentId"),
+      .populate('userId', 'name email phone')
+      .populate('paymentId', 'status method amount razorpayPaymentId'),
     Order.countDocuments(filter),
   ]);
 
   return sendResponse(
     res,
     200,
-    "Orders fetched.",
+    'Orders fetched.',
     { orders },
-    { total, page: pageNum, pages: Math.ceil(total / limitNum) }
+    { total, page: pageNum, pages: Math.ceil(total / limitNum) },
   );
 });
 
@@ -152,12 +152,12 @@ const getAllOrders = catchAsync(async (req, res) => {
 
 const getOrderById = catchAsync(async (req, res) => {
   const order = await Order.findById(req.params.id)
-    .populate("userId", "name email phone")
-    .populate("paymentId");
+    .populate('userId', 'name email phone')
+    .populate('paymentId');
 
-  if (!order) throw new ApiError(404, "Order not found.");
+  if (!order) throw new ApiError(404, 'Order not found.');
 
-  return sendResponse(res, 200, "Order fetched.", { order });
+  return sendResponse(res, 200, 'Order fetched.', { order });
 });
 
 // ─── Generate Invoice PDF (Admin) ─────────────────────────────────────────────
@@ -165,21 +165,21 @@ const getOrderById = catchAsync(async (req, res) => {
 const getOrderInvoice = catchAsync(async (req, res) => {
   const order = await Order.findById(req.params.id);
 
-  if (!order) throw new ApiError(404, "Order not found.");
+  if (!order) throw new ApiError(404, 'Order not found.');
 
   if (!order.shiprocketOrderId) {
-    throw new ApiError(400, "Shiprocket order not yet created for this order.");
+    throw new ApiError(400, 'Shiprocket order not yet created for this order.');
   }
 
   if (order.invoiceUrl) {
     logger.info(`[getOrderInvoice] Returning cached invoice for ${order.orderNumber}`);
-    return sendResponse(res, 200, "Invoice URL fetched.", { invoiceUrl: order.invoiceUrl });
+    return sendResponse(res, 200, 'Invoice URL fetched.', { invoiceUrl: order.invoiceUrl });
   }
 
   const invoiceUrl = await generateInvoice(order.shiprocketOrderId);
 
   if (!invoiceUrl) {
-    throw new ApiError(502, "Shiprocket returned no invoice URL.");
+    throw new ApiError(502, 'Shiprocket returned no invoice URL.');
   }
 
   order.invoiceUrl = invoiceUrl;
@@ -187,7 +187,7 @@ const getOrderInvoice = catchAsync(async (req, res) => {
 
   logger.info(`[getOrderInvoice] Invoice generated for ${order.orderNumber}: ${invoiceUrl}`);
 
-  return sendResponse(res, 200, "Invoice generated.", { invoiceUrl });
+  return sendResponse(res, 200, 'Invoice generated.', { invoiceUrl });
 });
 
 // ─── Generate Label PDF (Admin) ───────────────────────────────────────────────
@@ -195,21 +195,21 @@ const getOrderInvoice = catchAsync(async (req, res) => {
 const getOrderLabel = catchAsync(async (req, res) => {
   const order = await Order.findById(req.params.id);
 
-  if (!order) throw new ApiError(404, "Order not found.");
+  if (!order) throw new ApiError(404, 'Order not found.');
 
   if (!order.shiprocketShipmentId) {
-    throw new ApiError(400, "Shipment not yet created for this order.");
+    throw new ApiError(400, 'Shipment not yet created for this order.');
   }
 
   if (order.labelUrl) {
     logger.info(`[getOrderLabel] Returning cached label for ${order.orderNumber}`);
-    return sendResponse(res, 200, "Label URL fetched.", { labelUrl: order.labelUrl });
+    return sendResponse(res, 200, 'Label URL fetched.', { labelUrl: order.labelUrl });
   }
 
   const labelUrl = await generateLabel(order.shiprocketShipmentId);
 
   if (!labelUrl) {
-    throw new ApiError(502, "Shiprocket returned no label URL.");
+    throw new ApiError(502, 'Shiprocket returned no label URL.');
   }
 
   order.labelUrl = labelUrl;
@@ -217,30 +217,27 @@ const getOrderLabel = catchAsync(async (req, res) => {
 
   logger.info(`[getOrderLabel] Label generated for ${order.orderNumber}: ${labelUrl}`);
 
-  return sendResponse(res, 200, "Label generated.", { labelUrl });
+  return sendResponse(res, 200, 'Label generated.', { labelUrl });
 });
 
 // ─── Update Order Status (Admin) ──────────────────────────────────────────────
 //
-// MADE-TO-ORDER FLOW:
-//   confirmed → preparing → ready_for_pickup → [Shiprocket triggered here]
-//   → shipped → out_for_delivery → delivered
-//
-// Shiprocket is NOT triggered here; it is triggered in markReadyForPickup.
+// Audit fix 2.9: cancellation path is now wrapped in a MongoDB transaction so
+// stock restore, coupon reverse, Shiprocket cancel, and order save are atomic.
 
 const updateOrderStatus = catchAsync(async (req, res) => {
   const { status, note } = req.body;
 
-  const order = await Order.findById(req.params.id).populate("userId", "name email");
-  if (!order) throw new ApiError(404, "Order not found.");
+  const order = await Order.findById(req.params.id).populate('userId', 'name email');
+  if (!order) throw new ApiError(404, 'Order not found.');
 
   const validTransitions = {
-    confirmed: ["preparing", "cancelled"],
-    preparing: ["ready_for_pickup", "cancelled"],
-    ready_for_pickup: ["shipped", "cancelled"],
-    shipped: ["out_for_delivery", "delivered", "rto"],
-    out_for_delivery: ["delivered", "rto"],
-    delivered: ["refunded"],
+    confirmed: ['preparing', 'cancelled'],
+    preparing: ['ready_for_pickup', 'cancelled'],
+    ready_for_pickup: ['shipped', 'cancelled'],
+    shipped: ['out_for_delivery', 'delivered', 'rto'],
+    out_for_delivery: ['delivered', 'rto'],
+    delivered: ['refunded'],
     rto: [],
     cancelled: [],
     refunded: [],
@@ -249,36 +246,48 @@ const updateOrderStatus = catchAsync(async (req, res) => {
   if (!validTransitions[order.status]?.includes(status)) {
     throw new ApiError(
       400,
-      `Cannot transition order from "${order.status}" to "${status}".`
+      `Cannot transition order from "${order.status}" to "${status}".`,
     );
   }
 
-  // Block direct transition to ready_for_pickup via this endpoint —
-  // use the dedicated markReadyForPickup endpoint instead (it triggers Shiprocket).
-  if (status === "ready_for_pickup") {
+  if (status === 'ready_for_pickup') {
     throw new ApiError(
       400,
-      'Use POST /admin/orders/:id/ready-for-pickup to mark an order as ready. This triggers Shiprocket automatically.'
+      'Use POST /admin/orders/:id/ready-for-pickup to mark an order as ready. This triggers Shiprocket automatically.',
     );
   }
 
-  order.status = status;
-  order.statusHistory.push({
-    status,
-    note: note || `Status updated to ${status} by admin.`,
-    updatedBy: req.user._id,
-  });
+  if (status === 'cancelled') {
+    // Audit fix 2.9: wrap in transaction — stock + coupon + save must be atomic
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await restoreStock(order.items, session);
 
-  if (status === "cancelled") {
-    await restoreStock(order.items);
+        if (order.couponId && order.discountAmount > 0) {
+          await Coupon.findByIdAndUpdate(
+            order.couponId,
+            { $inc: { usageCount: -1 } },
+            { session },
+          );
+        }
 
-    // Reverse coupon usage
-    if (order.couponId && order.discountAmount > 0) {
-      await Coupon.findByIdAndUpdate(order.couponId, {
-        $inc: { usageCount: -1 },
+        order.status = 'cancelled';
+        order.statusHistory.push({
+          status: 'cancelled',
+          note: note || 'Cancelled by admin.',
+          updatedBy: req.user._id,
+        });
+
+        await order.save({ session });
       });
+    } finally {
+      await session.endSession();
     }
 
+    // Shiprocket cancel is intentionally outside the transaction — it's an
+    // external API call that cannot be rolled back. We log failures but don't
+    // block the cancellation.
     if (order.shiprocketOrderId) {
       try {
         await cancelShiprocketOrder(order.shiprocketOrderId);
@@ -287,9 +296,19 @@ const updateOrderStatus = catchAsync(async (req, res) => {
         logger.warn(`Shiprocket cancel failed for ${order.orderNumber}: ${err.message}`);
       }
     }
+
+    return sendResponse(res, 200, `Order status updated to "cancelled".`, { order });
   }
 
-  if (status === "delivered") {
+  // Non-cancellation transitions (delivered, shipped, etc.)
+  order.status = status;
+  order.statusHistory.push({
+    status,
+    note: note || `Status updated to ${status} by admin.`,
+    updatedBy: req.user._id,
+  });
+
+  if (status === 'delivered') {
     sendReviewRequestEmail({
       email: order.userId.email,
       name: order.userId.name,
@@ -303,34 +322,25 @@ const updateOrderStatus = catchAsync(async (req, res) => {
 });
 
 // ─── Mark Ready for Pickup (Admin) ────────────────────────────────────────────
-//
-// MADE-TO-ORDER SHIPMENT TRIGGER:
-//   This is the ONLY place Shiprocket order creation / AWB assignment / pickup
-//   generation happens. It fires when admin marks the order as ready after
-//   physical preparation (1-2 days for pickles).
-//
-// Flow:
-//   1. Validate order is in "preparing" status
-//   2. Create Shiprocket order → assign AWB → generate pickup
-//   3. Set order.status = "ready_for_pickup"
-//   4. Send shipment notification email to customer
 
 const markReadyForPickup = catchAsync(async (req, res) => {
-  const order = await Order.findById(req.params.id).populate("userId", "name email");
-  if (!order) throw new ApiError(404, "Order not found.");
+  const order = await Order.findById(req.params.id).populate('userId', 'name email');
+  if (!order) throw new ApiError(404, 'Order not found.');
 
-  if (order.status !== "preparing") {
+  if (order.status !== 'preparing') {
     throw new ApiError(
       400,
-      `Order must be in "preparing" status to mark as ready for pickup. Current: "${order.status}".`
+      `Order must be in "preparing" status to mark as ready for pickup. Current: "${order.status}".`,
     );
   }
 
   if (order.awbCode) {
-    throw new ApiError(400, `Order already has AWB: ${order.awbCode}. Shipment already created.`);
+    throw new ApiError(
+      400,
+      `Order already has AWB: ${order.awbCode}. Shipment already created.`,
+    );
   }
 
-  // Trigger Shiprocket: create order → assign AWB → generate pickup
   const { shiprocketOrderId, shiprocketShipmentId, awbCode, courierName } =
     await createShiprocketOrder(order, order.userId);
 
@@ -338,29 +348,32 @@ const markReadyForPickup = catchAsync(async (req, res) => {
   order.shiprocketShipmentId = shiprocketShipmentId;
   order.awbCode = awbCode;
   order.courierName = courierName;
-  order.trackingStatus = "Booked";
+  order.trackingStatus = 'Booked';
   order.trackingUpdatedAt = new Date();
-  order.status = "ready_for_pickup";
+  order.status = 'ready_for_pickup';
   order.statusHistory.push({
-    status: "ready_for_pickup",
+    status: 'ready_for_pickup',
     note: `Order ready for pickup. Shiprocket AWB: ${awbCode} via ${courierName}.`,
     updatedBy: req.user._id,
   });
 
   await order.save();
 
-  // Notify customer that their order has been dispatched for pickup
   sendShipmentEmail({
     email: order.userId.email,
     name: order.userId.name,
     order,
   }).catch((err) =>
-    logger.warn(`[markReadyForPickup] Shipment email failed for ${order.orderNumber}: ${err.message}`)
+    logger.warn(
+      `[markReadyForPickup] Shipment email failed for ${order.orderNumber}: ${err.message}`,
+    ),
   );
 
-  logger.info(`[markReadyForPickup] Order ${order.orderNumber} ready for pickup. AWB: ${awbCode} via ${courierName}`);
+  logger.info(
+    `[markReadyForPickup] Order ${order.orderNumber} ready for pickup. AWB: ${awbCode} via ${courierName}`,
+  );
 
-  return sendResponse(res, 200, "Order marked as ready for pickup. Shiprocket AWB assigned.", {
+  return sendResponse(res, 200, 'Order marked as ready for pickup. Shiprocket AWB assigned.', {
     order: {
       _id: order._id,
       orderNumber: order.orderNumber,
@@ -374,23 +387,20 @@ const markReadyForPickup = catchAsync(async (req, res) => {
 });
 
 // ─── Ship Order via Shiprocket (Admin manual override) ────────────────────────
-//
-// Manual override for edge cases where markReadyForPickup wasn't used.
-// Only allowed on confirmed or preparing orders that have no AWB yet.
 
 const shipOrder = catchAsync(async (req, res) => {
-  const order = await Order.findById(req.params.id).populate("userId", "name email");
-  if (!order) throw new ApiError(404, "Order not found.");
+  const order = await Order.findById(req.params.id).populate('userId', 'name email');
+  if (!order) throw new ApiError(404, 'Order not found.');
 
-  if (!["confirmed", "preparing"].includes(order.status)) {
+  if (!['confirmed', 'preparing'].includes(order.status)) {
     throw new ApiError(
       400,
-      `Order must be "confirmed" or "preparing" to manually ship. Current: "${order.status}". Use mark-ready-for-pickup for normal flow.`
+      `Order must be "confirmed" or "preparing" to manually ship. Current: "${order.status}". Use mark-ready-for-pickup for normal flow.`,
     );
   }
 
   if (order.awbCode) {
-    throw new ApiError(400, "This order has already been submitted to Shiprocket.");
+    throw new ApiError(400, 'This order has already been submitted to Shiprocket.');
   }
 
   const { shiprocketOrderId, shiprocketShipmentId, awbCode, courierName } =
@@ -400,11 +410,11 @@ const shipOrder = catchAsync(async (req, res) => {
   order.shiprocketShipmentId = shiprocketShipmentId;
   order.awbCode = awbCode;
   order.courierName = courierName;
-  order.trackingStatus = "Booked";
+  order.trackingStatus = 'Booked';
   order.trackingUpdatedAt = new Date();
-  order.status = "shipped";
+  order.status = 'shipped';
   order.statusHistory.push({
-    status: "shipped",
+    status: 'shipped',
     note: `Manually shipped via ${courierName}. AWB: ${awbCode}.`,
     updatedBy: req.user._id,
   });
@@ -415,10 +425,10 @@ const shipOrder = catchAsync(async (req, res) => {
     name: order.userId.name,
     order,
   }).catch((err) =>
-    logger.warn(`[shipOrder] Email failed for ${order.orderNumber}: ${err.message}`)
+    logger.warn(`[shipOrder] Email failed for ${order.orderNumber}: ${err.message}`),
   );
 
-  return sendResponse(res, 200, "Order shipped successfully.", {
+  return sendResponse(res, 200, 'Order shipped successfully.', {
     order: {
       _id: order._id,
       orderNumber: order.orderNumber,
@@ -433,18 +443,18 @@ const shipOrder = catchAsync(async (req, res) => {
 // ─── Retry Shipment (Admin) ───────────────────────────────────────────────────
 
 const retryShipment = catchAsync(async (req, res) => {
-  const order = await Order.findById(req.params.id).populate("userId", "name email");
-  if (!order) throw new ApiError(404, "Order not found.");
+  const order = await Order.findById(req.params.id).populate('userId', 'name email');
+  if (!order) throw new ApiError(404, 'Order not found.');
 
   if (order.awbCode) {
     throw new ApiError(400, `Order already has AWB: ${order.awbCode}. No retry needed.`);
   }
 
-  const allowedStatuses = ["confirmed", "preparing", "ready_for_pickup"];
+  const allowedStatuses = ['confirmed', 'preparing', 'ready_for_pickup'];
   if (!allowedStatuses.includes(order.status)) {
     throw new ApiError(
       400,
-      `Shipment retry only for confirmed/preparing/ready_for_pickup orders. Current: "${order.status}".`
+      `Shipment retry only for confirmed/preparing/ready_for_pickup orders. Current: "${order.status}".`,
     );
   }
 
@@ -455,7 +465,7 @@ const retryShipment = catchAsync(async (req, res) => {
   order.shiprocketShipmentId = shiprocketShipmentId;
   order.awbCode = awbCode;
   order.courierName = courierName;
-  order.trackingStatus = "Booked";
+  order.trackingStatus = 'Booked';
   order.trackingUpdatedAt = new Date();
   order.statusHistory.push({
     status: order.status,
@@ -466,12 +476,12 @@ const retryShipment = catchAsync(async (req, res) => {
   await order.save();
 
   if (!order.awbCode) {
-    throw new ApiError(502, "Shipment creation failed again. Check Shiprocket account.");
+    throw new ApiError(502, 'Shipment creation failed again. Check Shiprocket account.');
   }
 
   logger.info(`Admin retried shipment for ${order.orderNumber}. AWB: ${order.awbCode}`);
 
-  return sendResponse(res, 200, "Shipment created successfully on retry.", {
+  return sendResponse(res, 200, 'Shipment created successfully on retry.', {
     order: {
       _id: order._id,
       orderNumber: order.orderNumber,
@@ -483,38 +493,48 @@ const retryShipment = catchAsync(async (req, res) => {
 });
 
 // ─── Refund Order (Admin) ─────────────────────────────────────────────────────
+//
+// Audit fix 2.5: restoreStock is now called when refunding non-cancelled orders
+// so inventory is correctly returned to the warehouse.
 
 const refundOrder = catchAsync(async (req, res) => {
-  const order = await Order.findById(req.params.id).populate("paymentId");
+  const order = await Order.findById(req.params.id).populate('paymentId');
 
-  if (!order) throw new ApiError(404, "Order not found.");
+  if (!order) throw new ApiError(404, 'Order not found.');
   if (!order.paymentId?.razorpayPaymentId) {
-    throw new ApiError(400, "No captured payment to refund.");
+    throw new ApiError(400, 'No captured payment to refund.');
   }
 
   const refund = await initiateRefund(
     order.paymentId.razorpayPaymentId,
-    order.total * 100
+    order.total * 100,
   );
 
   await Payment.findByIdAndUpdate(order.paymentId._id, {
     $set: {
-      status: "refunded",
+      status: 'refunded',
       refundId: refund.id,
       refundedAt: new Date(),
     },
   });
 
-  order.status = "refunded";
+  // Audit fix 2.5: restore stock if items are physically back in the warehouse
+  // (i.e. order was not already cancelled/RTO — those paths restore on their own)
+  if (!['cancelled', 'rto'].includes(order.status)) {
+    await restoreStock(order.items);
+    logger.info(`[refundOrder] Stock restored for ${order.orderNumber}`);
+  }
+
+  order.status = 'refunded';
   order.statusHistory.push({
-    status: "refunded",
+    status: 'refunded',
     note: `Refund initiated: ${refund.id}`,
     updatedBy: req.user._id,
   });
 
   await order.save();
 
-  return sendResponse(res, 200, "Refund initiated.", { refundId: refund.id });
+  return sendResponse(res, 200, 'Refund initiated.', { refundId: refund.id });
 });
 
 // ─── Get All Users (Admin) ────────────────────────────────────────────────────
@@ -526,8 +546,8 @@ const getAllUsers = catchAsync(async (req, res) => {
   if (role) filter.role = role;
   if (search) {
     filter.$or = [
-      { name: { $regex: search, $options: "i" } },
-      { email: { $regex: search, $options: "i" } },
+      { name: { $regex: search, $options: 'i' } },
+      { email: { $regex: search, $options: 'i' } },
     ];
   }
 
@@ -539,16 +559,16 @@ const getAllUsers = catchAsync(async (req, res) => {
       .sort({ createdAt: -1 })
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
-      .select("-passwordHash -refreshToken -passwordResetToken"),
+      .select('-passwordHash -refreshToken -passwordResetToken'),
     User.countDocuments(filter),
   ]);
 
   return sendResponse(
     res,
     200,
-    "Users fetched.",
+    'Users fetched.',
     { users },
-    { total, page: pageNum, pages: Math.ceil(total / limitNum) }
+    { total, page: pageNum, pages: Math.ceil(total / limitNum) },
   );
 });
 
@@ -556,10 +576,10 @@ const getAllUsers = catchAsync(async (req, res) => {
 
 const toggleUserStatus = catchAsync(async (req, res) => {
   const user = await User.findById(req.params.id);
-  if (!user) throw new ApiError(404, "User not found.");
+  if (!user) throw new ApiError(404, 'User not found.');
 
-  if (user.role === "admin") {
-    throw new ApiError(403, "Cannot deactivate an admin account.");
+  if (user.role === 'admin') {
+    throw new ApiError(403, 'Cannot deactivate an admin account.');
   }
 
   user.isActive = !user.isActive;
@@ -568,15 +588,15 @@ const toggleUserStatus = catchAsync(async (req, res) => {
   return sendResponse(
     res,
     200,
-    `User account ${user.isActive ? "activated" : "deactivated"} successfully.`,
-    { user: user.toPublicJSON() }
+    `User account ${user.isActive ? 'activated' : 'deactivated'} successfully.`,
+    { user: user.toPublicJSON() },
   );
 });
 
 // ─── Analytics ────────────────────────────────────────────────────────────────
 
 const getAnalytics = catchAsync(async (req, res) => {
-  const { period = "30" } = req.query;
+  const { period = '30' } = req.query;
   const days = Math.min(365, Math.max(7, Number(period)));
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
@@ -587,16 +607,20 @@ const getAnalytics = catchAsync(async (req, res) => {
           createdAt: { $gte: since },
           status: {
             $in: [
-              "confirmed", "preparing", "ready_for_pickup",
-              "shipped", "out_for_delivery", "delivered",
+              'confirmed',
+              'preparing',
+              'ready_for_pickup',
+              'shipped',
+              'out_for_delivery',
+              'delivered',
             ],
           },
         },
       },
       {
         $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-          revenue: { $sum: "$total" },
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+          revenue: { $sum: '$total' },
           orders: { $sum: 1 },
         },
       },
@@ -604,14 +628,14 @@ const getAnalytics = catchAsync(async (req, res) => {
     ]),
 
     Order.aggregate([
-      { $match: { createdAt: { $gte: since }, status: { $ne: "cancelled" } } },
-      { $unwind: "$items" },
+      { $match: { createdAt: { $gte: since }, status: { $ne: 'cancelled' } } },
+      { $unwind: '$items' },
       {
         $group: {
-          _id: "$items.productId",
-          name: { $first: "$items.name" },
-          totalSold: { $sum: "$items.quantity" },
-          revenue: { $sum: { $multiply: ["$items.price", "$items.quantity"] } },
+          _id: '$items.productId',
+          name: { $first: '$items.name' },
+          totalSold: { $sum: '$items.quantity' },
+          revenue: { $sum: { $multiply: ['$items.price', '$items.quantity'] } },
         },
       },
       { $sort: { totalSold: -1 } },
@@ -620,11 +644,11 @@ const getAnalytics = catchAsync(async (req, res) => {
 
     Order.aggregate([
       { $match: { createdAt: { $gte: since } } },
-      { $group: { _id: "$paymentMethod", count: { $sum: 1 } } },
+      { $group: { _id: '$paymentMethod', count: { $sum: 1 } } },
     ]),
   ]);
 
-  return sendResponse(res, 200, "Analytics fetched.", {
+  return sendResponse(res, 200, 'Analytics fetched.', {
     period: days,
     revenueByDay,
     topProducts,

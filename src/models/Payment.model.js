@@ -62,4 +62,7 @@ paymentSchema.index({ userId: 1 });
 paymentSchema.index({ razorpayOrderId: 1 }, { unique: true, sparse: true });
 paymentSchema.index({ razorpayPaymentId: 1 });
 
+// Idempotency key index — fixes full collection scan on every checkout (audit fix 5.3)
+paymentSchema.index({ "pendingOrderMeta.idempotencyKey": 1 }, { sparse: true });
+
 module.exports = mongoose.model("Payment", paymentSchema);

@@ -31,7 +31,6 @@ const cartSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
-      unique: true,
     },
     items: [cartItemSchema],
     coupon: {
@@ -42,10 +41,10 @@ const cartSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// ─── Indexes ────────────────────────────────────────────────────────────────
-cartSchema.index({ userId: 1 });
+// ✅ SINGLE source of truth for index
+cartSchema.index({ userId: 1 }, { unique: true });
 
-// ─── Virtual: total ─────────────────────────────────────────────────────────
+// ─── Virtuals ─────────────────────────────────────────
 cartSchema.virtual('subtotal').get(function () {
   return this.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
 });

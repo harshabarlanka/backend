@@ -35,7 +35,10 @@ const srFetch = async (endpoint, options = {}, retried = false) => {
   try {
     data = await response.json();
   } catch {
-    throw new ApiError(502, `Shiprocket non-JSON response: ${response.statusText}`);
+    throw new ApiError(
+      502,
+      `Shiprocket non-JSON response: ${response.statusText}`,
+    );
   }
 
   if (!response.ok) {
@@ -44,7 +47,10 @@ const srFetch = async (endpoint, options = {}, retried = false) => {
       message: data.message || data.error || "Unknown error",
       full_response: JSON.stringify(data),
     });
-    throw new ApiError(502, data.message || `Shiprocket API failed: ${endpoint}`);
+    throw new ApiError(
+      502,
+      data.message || `Shiprocket API failed: ${endpoint}`,
+    );
   }
 
   return data;
@@ -68,9 +74,39 @@ const SHIPROCKET_STATUS_MAP = {
 
 const mapShiprocketStatusToInternal = (status) => {
   if (!status) return null;
-  return SHIPROCKET_STATUS_MAP[status.toLowerCase().trim()] || null;
-};
 
+  const s = status.toLowerCase().trim();
+
+  // 🔴 Terminal states first (highest priority)
+  if (s.includes("cancel")) return "cancelled";
+  if (s.includes("rto")) return "rto";
+  if (s.includes("deliver")) return "delivered";
+
+  // 🟡 Delivery stage
+  if (s.includes("out for delivery")) return "out_for_delivery";
+
+  // 🔵 Transit stage
+  if (
+    s.includes("transit") ||
+    s.includes("dispatch") ||
+    s.includes("shipped") ||
+    s.includes("in movement")
+  ) {
+    return "shipped";
+  }
+
+  // 🟣 Shipment created / packed stage
+  if (
+    s.includes("ready to ship") ||
+    s.includes("manifest") ||
+    s.includes("pickup scheduled") ||
+    s.includes("pickup generated")
+  ) {
+    return "ready_for_pickup";
+  }
+
+  return null;
+};
 // ─────────────────────────────────────────────────────────────────────────────
 // BUILD ORDER PAYLOAD — uses product dimensions from Feature 6
 // ─────────────────────────────────────────────────────────────────────────────
@@ -84,7 +120,7 @@ const buildOrderPayload = (order, user) => {
   // Feature 6: use actual product weight; minimum 0.1 kg
   const weight = Math.max(
     0.1,
-    order.items.reduce((sum, i) => sum + i.quantity, 0) * 0.5
+    order.items.reduce((sum, i) => sum + i.quantity, 0) * 0.5,
   );
 
   // Use stored courier dimensions if available, else use product-level defaults
@@ -153,7 +189,7 @@ const getAvailableCouriers = async ({ deliveryPincode, weight, isCod }) => {
 
   const data = await srFetch(
     `/courier/serviceability/?pickup_postcode=${pickupPincode}&delivery_postcode=${deliveryPincode}&weight=${weight}&cod=${codFlag}`,
-    { method: "GET" }
+    { method: "GET" },
   );
 
   const couriers = data.data?.available_courier_companies || [];
@@ -210,7 +246,8 @@ const assignAwbWithRetry = async (shipmentId, courierId = null) => {
 
   const attempts = [
     async () => {
-      if (!courierId) throw new Error("No courier_id — skipping targeted attempt");
+      if (!courierId)
+        throw new Error("No courier_id — skipping targeted attempt");
       logger.info("[Shiprocket] AWB assign attempt 1 — with courier_id", {
         shipment_id: sid,
         courier_id: courierId,
@@ -224,7 +261,9 @@ const assignAwbWithRetry = async (shipmentId, courierId = null) => {
       });
     },
     async () => {
-      logger.info("[Shiprocket] AWB assign attempt 2 — auto courier", { shipment_id: sid });
+      logger.info("[Shiprocket] AWB assign attempt 2 — auto courier", {
+        shipment_id: sid,
+      });
       return await srFetch("/courier/assign/awb", {
         method: "POST",
         body: JSON.stringify({ shipment_id: [Number(sid)] }),
@@ -236,10 +275,7 @@ const assignAwbWithRetry = async (shipmentId, courierId = null) => {
     try {
       const res = await attempts[i]();
 
-      const result =
-        res?.response?.[sid] ||
-        res?.response?.data ||
-        res?.data;
+      const result = res?.response?.[sid] || res?.response?.data || res?.data;
 
       logger.info(`[Shiprocket] AWB assign attempt ${i + 1} raw response`, {
         shipment_id: sid,
@@ -352,7 +388,9 @@ const createShiprocketOrder = async (order, user) => {
     throw new ApiError(502, "Shiprocket returned no shipment_id");
   }
 
-  logger.info(`[Shiprocket] Order created: order_id=${orderId} | shipment_id=${shipmentId}`);
+  logger.info(
+    `[Shiprocket] Order created: order_id=${orderId} | shipment_id=${shipmentId}`,
+  );
 
   const isCod = false;
   const weight = payload.weight;
@@ -364,7 +402,11 @@ const createShiprocketOrder = async (order, user) => {
   let selectedEtd = null;
 
   try {
-    const couriers = await getAvailableCouriers({ deliveryPincode, weight, isCod });
+    const couriers = await getAvailableCouriers({
+      deliveryPincode,
+      weight,
+      isCod,
+    });
     const best = selectBestCourier(couriers);
     if (best) {
       selectedCourierId = best.courier_company_id;
@@ -373,12 +415,18 @@ const createShiprocketOrder = async (order, user) => {
       selectedEtd = best.etd ? String(best.etd) : null;
     }
   } catch (err) {
-    logger.warn("[Shiprocket] Serviceability check failed — proceeding without courier_id", {
-      error: err.message,
-    });
+    logger.warn(
+      "[Shiprocket] Serviceability check failed — proceeding without courier_id",
+      {
+        error: err.message,
+      },
+    );
   }
 
-  const { awbCode, courierName } = await assignAwbWithRetry(shipmentId, selectedCourierId);
+  const { awbCode, courierName } = await assignAwbWithRetry(
+    shipmentId,
+    selectedCourierId,
+  );
 
   await generatePickupSafely(shipmentId, awbCode);
 
@@ -387,7 +435,10 @@ const createShiprocketOrder = async (order, user) => {
     shiprocketShipmentId: String(shipmentId),
     awbCode,
     courierId: selectedCourierId,
-    courierName: courierName || selectedCourierName || (awbCode ? "Shiprocket" : "Pending"),
+    courierName:
+      courierName ||
+      selectedCourierName ||
+      (awbCode ? "Shiprocket" : "Pending"),
     shippingCost: selectedRate,
     etd: selectedEtd,
   };
@@ -460,13 +511,15 @@ const retryPendingAwbOrders = async () => {
     awbRetryCount: { $lt: 5 },
   }).limit(50);
 
-  logger.info("[AWB Retry Cron] Processing stuck orders", { count: stuckOrders.length });
+  logger.info("[AWB Retry Cron] Processing stuck orders", {
+    count: stuckOrders.length,
+  });
 
   for (const order of stuckOrders) {
     try {
       const weight = Math.max(
         0.1,
-        order.items.reduce((sum, i) => sum + i.quantity, 0) * 0.5
+        order.items.reduce((sum, i) => sum + i.quantity, 0) * 0.5,
       );
 
       let courierId = null;
@@ -479,12 +532,14 @@ const retryPendingAwbOrders = async () => {
         const best = selectBestCourier(couriers);
         courierId = best?.courier_company_id || null;
       } catch (e) {
-        logger.warn("[AWB Retry Cron] Serviceability check failed", { error: e.message });
+        logger.warn("[AWB Retry Cron] Serviceability check failed", {
+          error: e.message,
+        });
       }
 
       const { awbCode, courierName } = await assignAwbWithRetry(
         order.shiprocketShipmentId,
-        courierId
+        courierId,
       );
 
       order.awbRetryCount = (order.awbRetryCount || 0) + 1;
@@ -540,7 +595,9 @@ const trackShipment = async (awbCode) => {
     };
   }
 
-  const data = await srFetch(`/courier/track/awb/${awbCode}`, { method: "GET" });
+  const data = await srFetch(`/courier/track/awb/${awbCode}`, {
+    method: "GET",
+  });
 
   const trackData = data.tracking_data || {};
   const track = trackData.shipment_track?.[0] || {};
@@ -598,14 +655,21 @@ const generateLabel = async (shiprocketShipmentId) => {
 // Get Shipping Rates (for frontend display)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const getShippingRates = async ({ pickupPincode, deliveryPincode, weight, cod }) => {
+const getShippingRates = async ({
+  pickupPincode,
+  deliveryPincode,
+  weight,
+  cod,
+}) => {
   const pickup = (
-    pickupPincode || process.env.SHIPROCKET_PICKUP_PINCODE || "522502"
+    pickupPincode ||
+    process.env.SHIPROCKET_PICKUP_PINCODE ||
+    "522502"
   ).trim();
 
   const data = await srFetch(
     `/courier/serviceability/?pickup_postcode=${pickup}&delivery_postcode=${deliveryPincode}&weight=${weight || 0.5}&cod=${cod ? 1 : 0}`,
-    { method: "GET" }
+    { method: "GET" },
   );
 
   const couriers = data.data?.available_courier_companies || [];
