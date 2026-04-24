@@ -3,6 +3,8 @@ require("dotenv").config();
 const validateEnv = require("./config/validateEnv");
 validateEnv();
 require("./crons/trackingSync.cron");
+require("./crons/rtoRefund.cron");
+require("./crons/refundRetry.cron");
 
 const app = require("./app");
 const connectDB = require("./config/db");

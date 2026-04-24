@@ -79,7 +79,12 @@ const mapShiprocketStatusToInternal = (status) => {
 
   // 🔴 Terminal states first (highest priority)
   if (s.includes("cancel")) return "cancelled";
-  if (s.includes("rto")) return "rto";
+
+  // ✅ FIX: handle ALL RTO / Return cases
+  if (s.includes("rto") || s.includes("return") || s.includes("undelivered")) {
+    return "rto";
+  }
+
   if (s.includes("deliver")) return "delivered";
 
   // 🟡 Delivery stage

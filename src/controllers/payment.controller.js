@@ -1,22 +1,22 @@
-const mongoose = require('mongoose');
-const Order = require('../models/Order.model');
-const Cart = require('../models/Cart.model');
-const Payment = require('../models/Payment.model');
-const User = require('../models/User.model');
-const Coupon = require('../models/Coupon.model');
+const mongoose = require("mongoose");
+const Order = require("../models/Order.model");
+const Cart = require("../models/Cart.model");
+const Payment = require("../models/Payment.model");
+const User = require("../models/User.model");
+const Coupon = require("../models/Coupon.model");
 const {
   verifyPaymentSignature,
   verifyWebhookSignature,
   fetchRazorpayPayment,
   initiateRefund,
-} = require('../services/razorpay.service');
-const { sendOrderConfirmationEmail } = require('../services/email.service');
-const { deductStock } = require('../utils/stock');
-const { generateOrderNumber } = require('../utils/orderNumber');
-const ApiError = require('../utils/ApiError');
-const { sendResponse } = require('../utils/ApiResponse');
-const catchAsync = require('../utils/catchAsync');
-const logger = require('../utils/logger');
+} = require("../services/razorpay.service");
+const { sendOrderConfirmationEmail } = require("../services/email.service");
+const { deductStock } = require("../utils/stock");
+const { generateOrderNumber } = require("../utils/orderNumber");
+const ApiError = require("../utils/ApiError");
+const { sendResponse } = require("../utils/ApiResponse");
+const catchAsync = require("../utils/catchAsync");
+const logger = require("../utils/logger");
 
 // ─── Helper: increment coupon usageCount atomically ───────────────────────────
 const incrementCouponUsage = async (couponId, session) => {
@@ -33,7 +33,12 @@ const incrementCouponUsage = async (couponId, session) => {
 // Called inside a transaction after signature verification.
 // This is the ONLY place an Order is written to MongoDB.
 
-const createOrderFromPayment = async (payment, userId, razorpayPaymentId, session) => {
+const createOrderFromPayment = async (
+  payment,
+  userId,
+  razorpayPaymentId,
+  session,
+) => {
   const meta = payment.pendingOrderMeta;
   if (!meta) {
     throw new Error(`Payment ${payment._id} has no pendingOrderMeta`);
@@ -44,7 +49,9 @@ const createOrderFromPayment = async (payment, userId, razorpayPaymentId, sessio
     idempotencyKey: meta.idempotencyKey,
   }).session(session);
   if (existing) {
-    logger.info(`[createOrderFromPayment] Order already exists: ${existing.orderNumber}`);
+    logger.info(
+      `[createOrderFromPayment] Order already exists: ${existing.orderNumber}`,
+    );
     return existing;
   }
 
@@ -56,8 +63,8 @@ const createOrderFromPayment = async (payment, userId, razorpayPaymentId, sessio
         userId,
         items: meta.items,
         shippingAddress: meta.shippingAddress,
-        paymentMethod: 'razorpay',
-        notes: meta.notes || '',
+        paymentMethod: "razorpay",
+        notes: meta.notes || "",
         // Coupon
         couponCode: meta.couponCode || null,
         couponId: meta.couponId || null,
@@ -76,10 +83,10 @@ const createOrderFromPayment = async (payment, userId, razorpayPaymentId, sessio
         // Payment link
         paymentId: payment._id,
         // Status: confirmed immediately (payment already captured)
-        status: 'confirmed',
+        status: "confirmed",
         statusHistory: [
           {
-            status: 'confirmed',
+            status: "confirmed",
             note: `Payment captured. Razorpay Payment ID: ${razorpayPaymentId}`,
             updatedBy: userId,
           },
@@ -111,7 +118,7 @@ const verifyPayment = catchAsync(async (req, res) => {
   const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
 
   if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
-    throw new ApiError(400, 'Missing payment verification fields.');
+    throw new ApiError(400, "Missing payment verification fields.");
   }
 
   // 1. Verify HMAC signature — security critical
@@ -124,27 +131,27 @@ const verifyPayment = catchAsync(async (req, res) => {
     logger.warn(
       `[verifyPayment] Signature mismatch. razorpayOrderId=${razorpayOrderId} userId=${req.user._id}`,
     );
-    throw new ApiError(400, 'Payment verification failed. Invalid signature.');
+    throw new ApiError(400, "Payment verification failed. Invalid signature.");
   }
 
   // 2. Load Payment record (contains all pending order metadata)
   const payment = await Payment.findOne({
     razorpayOrderId,
     userId: req.user._id,
-  }).select('+pendingOrderMeta');
+  }).select("+pendingOrderMeta");
 
   if (!payment) {
-    throw new ApiError(404, 'Payment record not found.');
+    throw new ApiError(404, "Payment record not found.");
   }
 
   // 2a. Idempotency: if payment already captured, return existing order
-  if (payment.status === 'captured' && payment.orderId) {
+  if (payment.status === "captured" && payment.orderId) {
     const existingOrder = await Order.findById(payment.orderId);
     if (existingOrder) {
       logger.info(
         `[verifyPayment] Order ${existingOrder.orderNumber} already confirmed — idempotent`,
       );
-      return sendResponse(res, 200, 'Payment already verified.', {
+      return sendResponse(res, 200, "Payment already verified.", {
         order: {
           _id: existingOrder._id,
           orderNumber: existingOrder.orderNumber,
@@ -157,12 +164,21 @@ const verifyPayment = catchAsync(async (req, res) => {
 
   // 3. Verify amount matches our Payment record (prevents amount manipulation)
   const rzpPayment = await fetchRazorpayPayment(razorpayPaymentId);
+  if (rzpPayment.status !== "captured") {
+    logger.warn(
+      `[verifyPayment] Payment not captured. Status=${rzpPayment.status}`,
+    );
+    throw new ApiError(400, "Payment not captured yet.");
+  }
+  if (rzpPayment.currency !== "INR") {
+    throw new ApiError(400, "Invalid currency.");
+  }
   if (rzpPayment.amount !== payment.amount) {
     logger.error(
       `[verifyPayment] AMOUNT MISMATCH! Expected=${payment.amount}, Got=${rzpPayment.amount}`,
       { razorpayOrderId, razorpayPaymentId },
     );
-    throw new ApiError(400, 'Payment amount mismatch. Contact support.');
+    throw new ApiError(400, "Payment amount mismatch. Contact support.");
   }
 
   // 4. MongoDB Transaction — all DB writes atomically
@@ -187,7 +203,7 @@ const verifyPayment = catchAsync(async (req, res) => {
             orderId: confirmedOrder._id,
             razorpayPaymentId,
             razorpaySignature,
-            status: 'captured',
+            status: "captured",
             paidAt: new Date(),
           },
         },
@@ -210,13 +226,15 @@ const verifyPayment = catchAsync(async (req, res) => {
   } catch (err) {
     // Audit fix 1.2: If deductStock threw an oversell error, the transaction
     // already rolled back. Payment is captured by Razorpay, so we must refund.
-    if (err.message && err.message.includes('Insufficient stock')) {
+    if (err.message && err.message.includes("Insufficient stock")) {
       logger.warn(
         `[verifyPayment] Oversell detected — initiating refund for ${razorpayPaymentId}`,
       );
       try {
-        await initiateRefund(razorpayPaymentId, payment.amount);
-        await Payment.findByIdAndUpdate(payment._id, { status: 'refunded' });
+        if (payment.status !== "refunded") {
+          await initiateRefund(razorpayPaymentId, payment.amount);
+          await Payment.findByIdAndUpdate(payment._id, { status: "refunded" });
+        }
       } catch (refundErr) {
         logger.error(
           `[verifyPayment] Refund FAILED after oversell for ${razorpayPaymentId}:`,
@@ -226,7 +244,7 @@ const verifyPayment = catchAsync(async (req, res) => {
       }
       throw new ApiError(
         409,
-        'One or more items went out of stock during checkout. Your payment will be refunded within 5-7 business days.',
+        "One or more items went out of stock during checkout. Your payment will be refunded within 5-7 business days.",
       );
     }
     throw err;
@@ -249,7 +267,7 @@ const verifyPayment = catchAsync(async (req, res) => {
     ),
   );
 
-  return sendResponse(res, 200, 'Payment verified. Order confirmed.', {
+  return sendResponse(res, 200, "Payment verified. Order confirmed.", {
     order: {
       _id: confirmedOrder._id,
       orderNumber: confirmedOrder.orderNumber,
@@ -269,19 +287,19 @@ const verifyPayment = catchAsync(async (req, res) => {
 // to ensure only one execution path (webhook OR /verify) claims the payment.
 
 const razorpayWebhook = async (req, res) => {
-  const signature = req.headers['x-razorpay-signature'];
+  const signature = req.headers["x-razorpay-signature"];
   const rawBody = req.body; // Buffer
 
   let isValid = false;
   try {
     isValid = verifyWebhookSignature(rawBody, signature);
   } catch (err) {
-    logger.warn('[razorpayWebhook] Signature verification threw:', err.message);
+    logger.warn("[razorpayWebhook] Signature verification threw:", err.message);
     return res.status(400).json({ received: false });
   }
 
   if (!isValid) {
-    logger.warn('[razorpayWebhook] Invalid signature — rejecting');
+    logger.warn("[razorpayWebhook] Invalid signature — rejecting");
     return res.status(400).json({ received: false });
   }
 
@@ -289,7 +307,7 @@ const razorpayWebhook = async (req, res) => {
   try {
     event = JSON.parse(rawBody.toString());
   } catch {
-    return res.status(400).json({ received: false, message: 'Invalid JSON' });
+    return res.status(400).json({ received: false, message: "Invalid JSON" });
   }
 
   const eventType = event.event;
@@ -300,23 +318,23 @@ const razorpayWebhook = async (req, res) => {
     switch (eventType) {
       // ── payment.captured ──────────────────────────────────────────────────
       // Fallback: fires if user closed browser before /verify ran.
-      case 'payment.captured': {
+      case "payment.captured": {
         // Audit fix 1.4: atomic status flip — only one caller (webhook OR /verify) wins.
         // findOneAndUpdate with $ne: 'captured' acts as a distributed lock.
         const claimed = await Payment.findOneAndUpdate(
           {
             razorpayOrderId: payload.order_id,
-            status: { $ne: 'captured' }, // only succeeds if not yet captured
+            status: { $ne: "captured" }, // only succeeds if not yet captured
           },
           {
             $set: {
               razorpayPaymentId: payload.id,
-              status: 'captured',
+              status: "captured",
               paidAt: new Date(),
               webhookPayload: payload,
             },
           },
-          { new: true, select: '+pendingOrderMeta' },
+          { new: true, select: "+pendingOrderMeta" },
         );
 
         if (!claimed) {
@@ -345,7 +363,12 @@ const razorpayWebhook = async (req, res) => {
             // Link orderId on Payment
             await Payment.findByIdAndUpdate(
               freshPayment._id,
-              { $set: { orderId: webhookOrder._id, razorpayPaymentId: payload.id } },
+              {
+                $set: {
+                  orderId: webhookOrder._id,
+                  razorpayPaymentId: payload.id,
+                },
+              },
               { session },
             );
 
@@ -361,13 +384,17 @@ const razorpayWebhook = async (req, res) => {
           });
         } catch (err) {
           // Audit fix 1.2: oversell refund path
-          if (err.message && err.message.includes('Insufficient stock')) {
+          if (err.message && err.message.includes("Insufficient stock")) {
             logger.warn(
               `[razorpayWebhook] Oversell detected — refunding ${payload.id}`,
             );
             try {
-              await initiateRefund(payload.id, freshPayment.amount);
-              await Payment.findByIdAndUpdate(freshPayment._id, { status: 'refunded' });
+              if (freshPayment.status !== "refunded") {
+                await initiateRefund(payload.id, freshPayment.amount);
+                await Payment.findByIdAndUpdate(freshPayment._id, {
+                  status: "refunded",
+                });
+              }
             } catch (refundErr) {
               logger.error(
                 `[razorpayWebhook] Refund FAILED after oversell for ${payload.id}:`,
@@ -382,7 +409,9 @@ const razorpayWebhook = async (req, res) => {
         }
 
         if (webhookOrder) {
-          const user = await User.findById(webhookOrder.userId).select('email name');
+          const user = await User.findById(webhookOrder.userId).select(
+            "email name",
+          );
           if (user) {
             sendOrderConfirmationEmail({
               email: user.email,
@@ -402,28 +431,30 @@ const razorpayWebhook = async (req, res) => {
       }
 
       // ── payment.failed ────────────────────────────────────────────────────
-      case 'payment.failed': {
+      case "payment.failed": {
         const payment = await Payment.findOne({
           razorpayOrderId: payload.order_id,
         });
         if (!payment) break;
 
         await Payment.findByIdAndUpdate(payment._id, {
-          $set: { status: 'failed', webhookPayload: payload },
+          $set: { status: "failed", webhookPayload: payload },
         });
 
-        logger.info(`[razorpayWebhook] Payment failed for razorpayOrderId ${payload.order_id}`);
+        logger.info(
+          `[razorpayWebhook] Payment failed for razorpayOrderId ${payload.order_id}`,
+        );
         break;
       }
 
       // ── refund.created ────────────────────────────────────────────────────
-      case 'refund.created': {
+      case "refund.created": {
         const refundPayload = event.payload?.refund?.entity || {};
         await Payment.findOneAndUpdate(
           { razorpayPaymentId: refundPayload.payment_id },
           {
             $set: {
-              status: 'refunded',
+              status: "refunded",
               refundId: refundPayload.id,
               refundedAt: new Date(),
               refundAmount: refundPayload.amount,
