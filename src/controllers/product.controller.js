@@ -12,58 +12,72 @@ const getProducts = catchAsync(async (req, res) => {
     limit = 12,
     category,
     sort = "-createdAt",
+    featured,
   } = req.query;
 
   const pageNum = Math.max(1, Number(page));
   const limitNum = Math.min(50, Math.max(1, Number(limit)));
   const skip = (pageNum - 1) * limitNum;
 
+  // ─── MATCH FILTER ────────────────────────────────────────────────────────────
   const match = { isActive: true };
-  if (category) match.category = category;
 
-  // ✅ START PIPELINE
+  if (category) {
+    match.category = category;
+  }
+
+  // ✅ FIX: featured filter (IMPORTANT)
+  if (featured === "true") {
+    match.isFeatured = true;
+  }
+
+  // ─── AGGREGATION PIPELINE ───────────────────────────────────────────────────
   const pipeline = [
     { $match: match },
 
-    // 🔥 IMPORTANT: compute minPrice FIRST
+    // compute minPrice
     {
       $addFields: {
-        minPrice: { $min: "$variants.price" }
-      }
-    }
+        minPrice: { $min: "$variants.price" },
+      },
+    },
   ];
 
-  // 🔥 👉 PLACE YOUR SORT CODE RIGHT HERE
+  // ─── SORT LOGIC ──────────────────────────────────────────────────────────────
   if (sort === "minPrice") {
     pipeline.push({ $sort: { minPrice: 1 } });
   } else if (sort === "-minPrice") {
     pipeline.push({ $sort: { minPrice: -1 } });
   } else if (sort === "createdAt") {
-    pipeline.push({ $sort: { createdAt: 1 } });
+    pipeline.push({ $sort: { createdAt: 1 } }); // oldest
   } else if (sort === "-createdAt") {
-    pipeline.push({ $sort: { createdAt: -1 } });
+    pipeline.push({ $sort: { createdAt: -1 } }); // newest
   } else if (sort === "-ratings.average") {
     pipeline.push({ $sort: { "ratings.average": -1 } });
   } else {
-    pipeline.push({ $sort: { createdAt: -1 } });
+    pipeline.push({ $sort: { createdAt: -1 } }); // default newest
   }
 
-  // ✅ AFTER SORT → pagination
-  pipeline.push(
-    { $skip: skip },
-    { $limit: limitNum }
-  );
+  // ─── PAGINATION ─────────────────────────────────────────────────────────────
+  pipeline.push({ $skip: skip }, { $limit: limitNum });
 
   const products = await Product.aggregate(pipeline);
   const total = await Product.countDocuments(match);
 
-  return sendResponse(res, 200, "Products fetched.", { products }, {
-    total,
-    page: pageNum,
-    pages: Math.ceil(total / limitNum),
-    limit: limitNum,
-  });
+  return sendResponse(
+    res,
+    200,
+    "Products fetched.",
+    { products },
+    {
+      total,
+      page: pageNum,
+      pages: Math.ceil(total / limitNum),
+      limit: limitNum,
+    },
+  );
 });
+
 // ─── Get Single Product by Slug ───────────────────────────────────────────────
 
 const getProduct = catchAsync(async (req, res) => {
@@ -79,29 +93,33 @@ const getProduct = catchAsync(async (req, res) => {
   return sendResponse(res, 200, "Product fetched.", { product });
 });
 
-// ─── Get Product by ID (internal / admin use) ─────────────────────────────────
+// ─── Get Product by ID ────────────────────────────────────────────────────────
 
 const getProductById = catchAsync(async (req, res) => {
   const product = await Product.findById(req.params.id);
+
   if (!product) throw new ApiError(404, "Product not found.");
+
   return sendResponse(res, 200, "Product fetched.", { product });
 });
 
-// ─── Get All Categories ───────────────────────────────────────────────────────
+// ─── Categories ───────────────────────────────────────────────────────────────
 
 const getCategories = catchAsync(async (req, res) => {
   const categories = await Product.distinct("category", { isActive: true });
+
   return sendResponse(res, 200, "Categories fetched.", { categories });
 });
 
-// ─── Create Product (Admin) ───────────────────────────────────────────────────
+// ─── Create Product ───────────────────────────────────────────────────────────
 
 const createProduct = catchAsync(async (req, res) => {
   const product = await Product.create(req.body);
+
   return sendResponse(res, 201, "Product created successfully.", { product });
 });
 
-// ─── Update Product (Admin) ───────────────────────────────────────────────────
+// ─── Update Product ───────────────────────────────────────────────────────────
 
 const updateProduct = catchAsync(async (req, res) => {
   const product = await Product.findByIdAndUpdate(
@@ -115,10 +133,11 @@ const updateProduct = catchAsync(async (req, res) => {
   return sendResponse(res, 200, "Product updated successfully.", { product });
 });
 
-// ─── Delete Product (Admin - soft delete) ────────────────────────────────────
+// ─── Delete Product (soft delete) ─────────────────────────────────────────────
 
 const deleteProduct = catchAsync(async (req, res) => {
   const product = await Product.findById(req.params.id);
+
   if (!product) throw new ApiError(404, "Product not found.");
 
   product.isActive = false;
@@ -135,15 +154,14 @@ const addReview = catchAsync(async (req, res) => {
 
   if (!product) throw new ApiError(404, "Product not found.");
 
-  // Prevent duplicate reviews from same user on same product
   const alreadyReviewed = product.reviews.some(
     (r) => r.userId.toString() === req.user._id.toString(),
   );
+
   if (alreadyReviewed) {
     throw new ApiError(409, "You have already reviewed this product.");
   }
 
-  // Verify buyer: orderId must belong to this user and contain this product
   if (orderId) {
     const order = await Order.findOne({
       _id: orderId,
@@ -151,6 +169,7 @@ const addReview = catchAsync(async (req, res) => {
       "items.productId": product._id,
       status: "delivered",
     });
+
     if (!order) {
       throw new ApiError(
         403,
@@ -167,7 +186,7 @@ const addReview = catchAsync(async (req, res) => {
     comment,
   });
 
-  await product.save(); // pre-save hook recalculates ratings
+  await product.save();
 
   return sendResponse(res, 201, "Review added successfully.", {
     ratings: product.ratings,
