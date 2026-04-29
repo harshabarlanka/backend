@@ -4,77 +4,120 @@ const ApiError = require("../utils/ApiError");
 const { sendResponse } = require("../utils/ApiResponse");
 const catchAsync = require("../utils/catchAsync");
 
-// ─── Get All Products (with filtering, sorting, pagination) ───────────────────
+// ─── Get All Products (sorting, pagination) ───────────────────────────────────
 
 const getProducts = catchAsync(async (req, res) => {
-  const {
-    page = 1,
-    limit = 12,
-    category,
-    sort = "-createdAt",
-    featured,
-  } = req.query;
+  const { page = 1, limit = 12, category, sort = "-createdAt" } = req.query;
 
   const pageNum = Math.max(1, Number(page));
   const limitNum = Math.min(50, Math.max(1, Number(limit)));
   const skip = (pageNum - 1) * limitNum;
 
-  // ─── MATCH FILTER ────────────────────────────────────────────────────────────
   const match = { isActive: true };
+  if (category) match.category = category;
 
-  if (category) {
-    match.category = category;
-  }
-
-  // ✅ FIX: featured filter (IMPORTANT)
-  if (featured === "true") {
-    match.isFeatured = true;
-  }
-
-  // ─── AGGREGATION PIPELINE ───────────────────────────────────────────────────
   const pipeline = [
     { $match: match },
-
-    // compute minPrice
-    {
-      $addFields: {
-        minPrice: { $min: "$variants.price" },
-      },
-    },
+    { $addFields: { minPrice: { $min: "$variants.price" } } },
   ];
 
-  // ─── SORT LOGIC ──────────────────────────────────────────────────────────────
-  if (sort === "minPrice") {
-    pipeline.push({ $sort: { minPrice: 1 } });
-  } else if (sort === "-minPrice") {
-    pipeline.push({ $sort: { minPrice: -1 } });
-  } else if (sort === "createdAt") {
-    pipeline.push({ $sort: { createdAt: 1 } }); // oldest
-  } else if (sort === "-createdAt") {
-    pipeline.push({ $sort: { createdAt: -1 } }); // newest
-  } else if (sort === "-ratings.average") {
-    pipeline.push({ $sort: { "ratings.average": -1 } });
-  } else {
-    pipeline.push({ $sort: { createdAt: -1 } }); // default newest
-  }
+  const SORT_MAP = {
+    minPrice: { minPrice: 1 },
+    "-minPrice": { minPrice: -1 },
+    createdAt: { createdAt: 1 },
+    "-createdAt": { createdAt: -1 },
+    "-ratings.average": { "ratings.average": -1 },
+  };
 
-  // ─── PAGINATION ─────────────────────────────────────────────────────────────
+  pipeline.push({ $sort: SORT_MAP[sort] || { createdAt: -1 } });
   pipeline.push({ $skip: skip }, { $limit: limitNum });
 
-  const products = await Product.aggregate(pipeline);
-  const total = await Product.countDocuments(match);
+  const [products, total] = await Promise.all([
+    Product.aggregate(pipeline),
+    Product.countDocuments(match),
+  ]);
 
   return sendResponse(
     res,
     200,
     "Products fetched.",
     { products },
+    { total, page: pageNum, pages: Math.ceil(total / limitNum), limit: limitNum },
+  );
+});
+
+// ─── Get Bestsellers ──────────────────────────────────────────────────────────
+// Priority: totalOrders DESC → averageRating DESC
+
+const getBestsellers = catchAsync(async (req, res) => {
+  const { limit = 4, page = 1 } = req.query;
+  const limitNum = Math.min(100, Math.max(1, Number(limit)));
+  const pageNum = Math.max(1, Number(page));
+  const skip = (pageNum - 1) * limitNum;
+
+  // Single aggregation: join order counts into products
+  const pipeline = [
+    { $match: { isActive: true } },
     {
-      total,
-      page: pageNum,
-      pages: Math.ceil(total / limitNum),
-      limit: limitNum,
+      $lookup: {
+        from: "orders",
+        let: { productId: "$_id" },
+        pipeline: [
+          {
+            $match: {
+              $expr: {
+                $and: [
+                  { $in: ["$status", ["delivered", "shipped", "confirmed", "preparing", "ready_for_pickup"]] },
+                  { $in: ["$$productId", "$items.productId"] },
+                ],
+              },
+            },
+          },
+          { $unwind: "$items" },
+          {
+            $match: {
+              $expr: { $eq: ["$items.productId", "$$productId"] },
+            },
+          },
+          {
+            $group: {
+              _id: null,
+              totalOrders: { $sum: "$items.quantity" },
+            },
+          },
+        ],
+        as: "orderStats",
+      },
     },
+    {
+      $addFields: {
+        totalOrders: {
+          $ifNull: [{ $arrayElemAt: ["$orderStats.totalOrders", 0] }, 0],
+        },
+        minPrice: { $min: "$variants.price" },
+      },
+    },
+    { $unset: "orderStats" },
+    {
+      $sort: { totalOrders: -1, "ratings.average": -1 },
+    },
+  ];
+
+  // Count total before pagination
+  const countPipeline = [...pipeline, { $count: "total" }];
+  const [countResult, products] = await Promise.all([
+    Product.aggregate(countPipeline),
+    Product.aggregate([...pipeline, { $skip: skip }, { $limit: limitNum }]),
+  ]);
+
+  const total = countResult[0]?.total || 0;
+
+  return sendResponse(
+    res,
+    200,
+    "Bestsellers fetched.",
+    { products },
+    { total, page: pageNum, pages: Math.ceil(total / limitNum), limit: limitNum },
   );
 });
 
@@ -86,9 +129,7 @@ const getProduct = catchAsync(async (req, res) => {
     isActive: true,
   }).populate("reviews.userId", "name");
 
-  if (!product) {
-    throw new ApiError(404, "Product not found.");
-  }
+  if (!product) throw new ApiError(404, "Product not found.");
 
   return sendResponse(res, 200, "Product fetched.", { product });
 });
@@ -97,9 +138,7 @@ const getProduct = catchAsync(async (req, res) => {
 
 const getProductById = catchAsync(async (req, res) => {
   const product = await Product.findById(req.params.id);
-
   if (!product) throw new ApiError(404, "Product not found.");
-
   return sendResponse(res, 200, "Product fetched.", { product });
 });
 
@@ -107,7 +146,6 @@ const getProductById = catchAsync(async (req, res) => {
 
 const getCategories = catchAsync(async (req, res) => {
   const categories = await Product.distinct("category", { isActive: true });
-
   return sendResponse(res, 200, "Categories fetched.", { categories });
 });
 
@@ -115,7 +153,6 @@ const getCategories = catchAsync(async (req, res) => {
 
 const createProduct = catchAsync(async (req, res) => {
   const product = await Product.create(req.body);
-
   return sendResponse(res, 201, "Product created successfully.", { product });
 });
 
@@ -127,9 +164,7 @@ const updateProduct = catchAsync(async (req, res) => {
     { $set: req.body },
     { new: true, runValidators: true },
   );
-
   if (!product) throw new ApiError(404, "Product not found.");
-
   return sendResponse(res, 200, "Product updated successfully.", { product });
 });
 
@@ -137,12 +172,9 @@ const updateProduct = catchAsync(async (req, res) => {
 
 const deleteProduct = catchAsync(async (req, res) => {
   const product = await Product.findById(req.params.id);
-
   if (!product) throw new ApiError(404, "Product not found.");
-
   product.isActive = false;
   await product.save();
-
   return sendResponse(res, 200, "Product deactivated successfully.");
 });
 
@@ -157,10 +189,7 @@ const addReview = catchAsync(async (req, res) => {
   const alreadyReviewed = product.reviews.some(
     (r) => r.userId.toString() === req.user._id.toString(),
   );
-
-  if (alreadyReviewed) {
-    throw new ApiError(409, "You have already reviewed this product.");
-  }
+  if (alreadyReviewed) throw new ApiError(409, "You have already reviewed this product.");
 
   if (orderId) {
     const order = await Order.findOne({
@@ -169,13 +198,7 @@ const addReview = catchAsync(async (req, res) => {
       "items.productId": product._id,
       status: "delivered",
     });
-
-    if (!order) {
-      throw new ApiError(
-        403,
-        "You can only review products from delivered orders.",
-      );
-    }
+    if (!order) throw new ApiError(403, "You can only review products from delivered orders.");
   }
 
   product.reviews.push({
@@ -210,6 +233,7 @@ const getReviews = catchAsync(async (req, res) => {
 
 module.exports = {
   getProducts,
+  getBestsellers,
   getProduct,
   getProductById,
   getCategories,

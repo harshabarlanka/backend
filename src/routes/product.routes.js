@@ -1,8 +1,9 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
 
 const {
   getProducts,
+  getBestsellers,
   getProduct,
   getProductById,
   getCategories,
@@ -11,39 +12,40 @@ const {
   deleteProduct,
   addReview,
   getReviews,
-} = require('../controllers/product.controller');
+} = require("../controllers/product.controller");
 
-const { protect } = require('../middleware/auth.middleware');
-const { restrictTo } = require('../middleware/admin.middleware');
-const { validate, schemas } = require('../middleware/validate.middleware');
+const { protect } = require("../middleware/auth.middleware");
+const { restrictTo } = require("../middleware/admin.middleware");
+const { validate, schemas } = require("../middleware/validate.middleware");
 
-// Public routes
-router.get('/', getProducts);
-router.get('/categories', getCategories);
-router.get('/id/:id', getProductById);
-router.get('/:slug', getProduct);
-router.get('/:id/reviews', getReviews);
+// Public routes — ORDER MATTERS: specific routes before /:slug
+router.get("/", getProducts);
+router.get("/bestsellers", getBestsellers);
+router.get("/categories", getCategories);
+router.get("/id/:id", getProductById);
+router.get("/:slug", getProduct);
+router.get("/:id/reviews", getReviews);
 
 // Protected user routes
-router.post('/:id/reviews', protect, validate(schemas.addReview), addReview);
+router.post("/:id/reviews", protect, validate(schemas.addReview), addReview);
 
 // Admin-only routes
 router.post(
-  '/',
+  "/",
   protect,
-  restrictTo('admin'),
+  restrictTo("admin"),
   validate(schemas.createProduct),
-  createProduct
+  createProduct,
 );
 
 router.put(
-  '/:id',
+  "/:id",
   protect,
-  restrictTo('admin'),
+  restrictTo("admin"),
   validate(schemas.updateProduct),
-  updateProduct
+  updateProduct,
 );
 
-router.delete('/:id', protect, restrictTo('admin'), deleteProduct);
+router.delete("/:id", protect, restrictTo("admin"), deleteProduct);
 
 module.exports = router;
