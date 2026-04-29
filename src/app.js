@@ -20,6 +20,7 @@ const userRoutes = require("./routes/user.routes");
 const uploadRoutes = require("./routes/upload.routes");
 const shippingRoutes = require("./routes/shipping.routes");
 const couponRoutes = require("./routes/coupon.routes"); // Feature 2
+const recommendationsRoutes = require("./routes/recommendations.routes");
 
 const { v4: uuidv4 } = require("uuid");
 const app = express();
@@ -120,6 +121,7 @@ app.use("/api/users", userRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/shipping", shippingRoutes);
 app.use("/api/coupons", couponRoutes); // Feature 2
+app.use("/api/recommendations", recommendationsRoutes);
 
 // ─── 404 Handler ──────────────────────────────────────────────────────────────
 app.use((req, res) => {
