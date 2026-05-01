@@ -52,33 +52,27 @@ const resolveShippingCost = async (pincode, weightKg) => {
       isCod: false,
     });
 
-    if (!couriers.length)
-      return {
-        courierId: null,
-        courierName: null,
-        shippingCost: 60,
-        etd: null,
-      };
+    // ❌ No courier → block order
+    if (!couriers.length) {
+      throw new ApiError(400, "Delivery not available to this pincode.");
+    }
 
-    const sorted = [...couriers].sort((a, b) => {
-      if (a.rate !== b.rate) return a.rate - b.rate;
-      const etdA = parseFloat(a.etd) || 999;
-      const etdB = parseFloat(b.etd) || 999;
-      return etdA - etdB;
-    });
+    // ✅ Pick first available courier (no sorting needed)
+    const selected = couriers[0];
 
-    const best = sorted[0];
     return {
-      courierId: best.courier_company_id,
-      courierName: best.courier_name,
-      shippingCost: Math.round(best.rate),
-      etd: best.etd ? String(best.etd) : null,
+      courierId: selected.courier_company_id,
+      courierName: selected.courier_name,
+      shippingCost: 60, // ✅ Flat price
+      etd: selected.etd ? String(selected.etd) : "5-7",
     };
   } catch (err) {
-    logger.warn("[resolveShippingCost] Failed, using fallback", {
+    logger.warn("[resolveShippingCost] Failed", {
       error: err.message,
     });
-    return { courierId: null, courierName: null, shippingCost: 60, etd: null };
+
+    // ❌ DO NOT silently allow order
+    throw new ApiError(400, "Delivery not available to this location.");
   }
 };
 
@@ -97,7 +91,12 @@ const resolveShippingCost = async (pincode, weightKg) => {
 // adds/removes/re-adds items that result in the same cart.
 
 const placeOrder = catchAsync(async (req, res) => {
-  const { shippingAddress, notes, couponCode } = req.body;
+  const { shippingAddress, notes, couponCode, paymentMode } = req.body;
+
+  // ── Validate paymentMode ────────────────────────────────────────────────────
+  // Accepted values: 'ONLINE' (default) | 'COD_PARTIAL'
+  const resolvedPaymentMode =
+    paymentMode === "COD_PARTIAL" ? "COD_PARTIAL" : "ONLINE";
 
   // 1. Fetch cart
   const cart = await Cart.findOne({ userId: req.user._id });
@@ -122,7 +121,7 @@ const placeOrder = catchAsync(async (req, res) => {
     .digest("hex")
     .slice(0, 16);
 
-  const idempotencyKey = `${req.user._id}-${cartHash}-${couponCode || "none"}-${shippingAddress.pincode}`;
+  const idempotencyKey = `${req.user._id}-${cartHash}-${couponCode || "none"}-${shippingAddress.pincode}-${resolvedPaymentMode}`;
 
   const existingPayment = await Payment.findOne({
     "pendingOrderMeta.idempotencyKey": idempotencyKey,
@@ -148,6 +147,11 @@ const placeOrder = catchAsync(async (req, res) => {
           couponCode: meta.couponCode,
           courierName: meta.courierName,
           etd: meta.etd,
+          // ── Partial COD fields ───────────────────────────
+          paymentMode: meta.paymentMode,
+          codFee: meta.codFee || 0,
+          advancePaidAmount: meta.advancePaidAmount || 0,
+          codRemainingAmount: meta.codRemainingAmount || 0,
         },
         razorpay: {
           orderId: existingPayment.razorpayOrderId,
@@ -211,15 +215,36 @@ const placeOrder = catchAsync(async (req, res) => {
     await resolveShippingCost(shippingAddress.pincode, weightKg);
 
   // 6. Calculate totals
-  const taxRate = 0.12;
+  const taxRate = 0;
   const tax = Math.round(subtotal * taxRate);
-  const total = Math.max(1, subtotal + shippingCost + tax - discountAmount);
+
+  // ── Partial COD Calculation ────────────────────────────────────────────────
+  // For COD_PARTIAL: add ₹50 COD handling fee (charged by Shiprocket).
+  // IMPORTANT: advancePaidAmount is 20% of (subtotal + shipping + codFee),
+  // i.e., the COD fee is included BEFORE splitting 20/80.
+  // Backend always recalculates — never trusts frontend values.
+  const COD_FEE = 50;
+  const codFee = resolvedPaymentMode === "COD_PARTIAL" ? COD_FEE : 0;
+  const total = Math.max(
+    1,
+    subtotal + shippingCost + tax - discountAmount + codFee,
+  );
+
+  // For COD_PARTIAL: Razorpay collects only 20% upfront; remaining 80% paid at door
+  const advancePaidAmount =
+    resolvedPaymentMode === "COD_PARTIAL" ? Math.round(total * 0.2) : total;
+  const codRemainingAmount =
+    resolvedPaymentMode === "COD_PARTIAL" ? total - advancePaidAmount : 0;
+
+  // Amount to charge via Razorpay (in paise)
+  const razorpayAmountPaise = advancePaidAmount * 100;
 
   // 7. Create Razorpay order (with idempotency key — audit fix 2.6)
   const orderNumber = generateOrderNumber();
-  const rzpOrder = await createRazorpayOrder(total * 100, orderNumber, {
+  const rzpOrder = await createRazorpayOrder(razorpayAmountPaise, orderNumber, {
     userId: req.user._id.toString(),
     customer: req.user.name,
+    paymentMode: resolvedPaymentMode,
   });
 
   // 8. Create Payment record with all pending order metadata.
@@ -229,7 +254,7 @@ const placeOrder = catchAsync(async (req, res) => {
     orderId: null, // will be set after order creation in verifyPayment
     userId: req.user._id,
     method: "razorpay",
-    amount: total * 100,
+    amount: razorpayAmountPaise, // advance amount only for COD_PARTIAL
     currency: "INR",
     status: "created",
     razorpayOrderId: rzpOrder.id,
@@ -254,11 +279,18 @@ const placeOrder = catchAsync(async (req, res) => {
       subtotal,
       tax,
       total,
+      // ── Partial COD fields ────────────────────────────────────────────────
+      paymentMode: resolvedPaymentMode,
+      codFee,
+      advancePaidAmount,
+      codRemainingAmount,
     },
   });
 
   logger.info(
-    `[placeOrder] Razorpay order ${rzpOrder.id} created for user ${req.user._id}. Order will be created after payment.`,
+    `[placeOrder] Razorpay order ${rzpOrder.id} created for user ${req.user._id}. ` +
+      `Mode=${resolvedPaymentMode}. Advance=${advancePaidAmount}. ` +
+      `Order will be created after payment.`,
   );
 
   return sendResponse(
@@ -276,10 +308,15 @@ const placeOrder = catchAsync(async (req, res) => {
         couponCode: coupon ? coupon.code : null,
         courierName,
         etd,
+        // ── Partial COD fields ───────────────────────────
+        paymentMode: resolvedPaymentMode,
+        codFee,
+        advancePaidAmount,
+        codRemainingAmount,
       },
       razorpay: {
         orderId: rzpOrder.id,
-        amount: rzpOrder.amount,
+        amount: rzpOrder.amount, // advance only for COD_PARTIAL
         currency: rzpOrder.currency,
         keyId: process.env.RAZORPAY_KEY_ID,
       },

@@ -90,10 +90,24 @@ const orderSchema = new mongoose.Schema(
 
     paymentMethod: {
       type: String,
-      enum: ['razorpay'],
+      enum: ['razorpay', 'cod_partial'],
       default: 'razorpay',
       required: true,
     },
+
+    // ── Partial COD Fields ────────────────────────────────────────────────────
+    // paymentMode distinguishes full online vs partial COD
+    paymentMode: {
+      type: String,
+      enum: ['ONLINE', 'COD_PARTIAL'],
+      default: 'ONLINE',
+    },
+    // ₹50 COD handling fee charged by Shiprocket (only for COD_PARTIAL)
+    codFee: { type: Number, default: 0 },
+    // Amount paid online upfront (20% of total incl. COD fee)
+    advancePaidAmount: { type: Number, default: 0 },
+    // Remaining amount to be paid in cash at delivery (80% of total)
+    codRemainingAmount: { type: Number, default: 0 },
 
     paymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment' },
 

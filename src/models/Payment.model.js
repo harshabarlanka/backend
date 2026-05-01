@@ -27,7 +27,8 @@ const paymentSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["created", "captured", "failed", "refunded"],
+      // partial_paid: advance captured for COD_PARTIAL orders (rest paid on delivery)
+      enum: ["created", "captured", "partial_paid", "failed", "refunded"],
       default: "created",
     },
 

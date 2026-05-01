@@ -67,7 +67,7 @@ const productSchema = new mongoose.Schema(
     },
     isActive: { type: Boolean, default: true },
     hsn: { type: String, default: "2001" },
-    taxRate: { type: Number, default: 12 },
+    taxRate: { type: Number, default: 0 },
   },
   {
     timestamps: true,

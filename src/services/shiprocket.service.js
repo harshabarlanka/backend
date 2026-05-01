@@ -133,6 +133,13 @@ const buildOrderPayload = (order, user) => {
     process.env.SHIPROCKET_PICKUP_LOCATION_NAME || "Primary"
   ).trim();
 
+  // ── Partial COD: tell Shiprocket this is a COD shipment ──────────────────
+  // For COD_PARTIAL orders, Shiprocket must collect the remaining COD amount
+  // (codRemainingAmount = 80% of total) at delivery.
+  const isCodPartial = order.paymentMode === 'COD_PARTIAL';
+  const shiprocketPaymentMethod = isCodPartial ? "COD" : "Prepaid";
+  const codAmount = isCodPartial ? (order.codRemainingAmount || 0) : 0;
+
   return {
     order_id: order.orderNumber,
     order_date: new Date(order.createdAt).toISOString().split("T")[0],
@@ -161,7 +168,9 @@ const buildOrderPayload = (order, user) => {
       tax: "0",
     })),
 
-    payment_method: "Prepaid",
+    payment_method: shiprocketPaymentMethod,
+    // For COD orders, Shiprocket collects codRemainingAmount at door
+    ...(isCodPartial && { cod_amount: codAmount }),
 
     sub_total: order.subtotal,
 

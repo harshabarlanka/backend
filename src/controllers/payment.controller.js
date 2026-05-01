@@ -55,6 +55,10 @@ const createOrderFromPayment = async (
     return existing;
   }
 
+  // ── Determine paymentMode and COD fields ──────────────────────────────────
+  const paymentMode = meta.paymentMode || 'ONLINE';
+  const isCodPartial = paymentMode === 'COD_PARTIAL';
+
   const order = await Order.create(
     [
       {
@@ -63,7 +67,8 @@ const createOrderFromPayment = async (
         userId,
         items: meta.items,
         shippingAddress: meta.shippingAddress,
-        paymentMethod: "razorpay",
+        // COD_PARTIAL uses 'cod_partial' as paymentMethod for Shiprocket differentiation
+        paymentMethod: isCodPartial ? 'cod_partial' : 'razorpay',
         notes: meta.notes || "",
         // Coupon
         couponCode: meta.couponCode || null,
@@ -80,14 +85,21 @@ const createOrderFromPayment = async (
         subtotal: meta.subtotal,
         tax: meta.tax,
         total: meta.total,
+        // ── Partial COD Fields ──────────────────────────────────────────────
+        paymentMode,
+        codFee: meta.codFee || 0,
+        advancePaidAmount: meta.advancePaidAmount || 0,
+        codRemainingAmount: meta.codRemainingAmount || 0,
         // Payment link
         paymentId: payment._id,
-        // Status: confirmed immediately (payment already captured)
+        // Status: confirmed immediately (advance payment captured)
         status: "confirmed",
         statusHistory: [
           {
             status: "confirmed",
-            note: `Payment captured. Razorpay Payment ID: ${razorpayPaymentId}`,
+            note: isCodPartial
+              ? `Advance ₹${meta.advancePaidAmount} captured. Remaining ₹${meta.codRemainingAmount} to be paid on delivery. Razorpay Payment ID: ${razorpayPaymentId}`
+              : `Payment captured. Razorpay Payment ID: ${razorpayPaymentId}`,
             updatedBy: userId,
           },
         ],
@@ -195,7 +207,8 @@ const verifyPayment = catchAsync(async (req, res) => {
         session,
       );
 
-      // 4b. Update Payment record — link orderId, mark captured
+      // 4b. Update Payment record — link orderId, mark captured/partial_paid
+      const isCodPartial = payment.pendingOrderMeta?.paymentMode === 'COD_PARTIAL';
       await Payment.findByIdAndUpdate(
         payment._id,
         {
@@ -203,7 +216,8 @@ const verifyPayment = catchAsync(async (req, res) => {
             orderId: confirmedOrder._id,
             razorpayPaymentId,
             razorpaySignature,
-            status: "captured",
+            // COD_PARTIAL: advance is captured; full payment only at delivery
+            status: isCodPartial ? "partial_paid" : "captured",
             paidAt: new Date(),
           },
         },
@@ -321,14 +335,16 @@ const razorpayWebhook = async (req, res) => {
       case "payment.captured": {
         // Audit fix 1.4: atomic status flip — only one caller (webhook OR /verify) wins.
         // findOneAndUpdate with $ne: 'captured' acts as a distributed lock.
+        // Also exclude 'partial_paid' to avoid double-processing COD_PARTIAL orders.
         const claimed = await Payment.findOneAndUpdate(
           {
             razorpayOrderId: payload.order_id,
-            status: { $ne: "captured" }, // only succeeds if not yet captured
+            status: { $nin: ["captured", "partial_paid"] }, // not yet processed
           },
           {
             $set: {
               razorpayPaymentId: payload.id,
+              // Will be corrected below after checking paymentMode
               status: "captured",
               paidAt: new Date(),
               webhookPayload: payload,
@@ -360,13 +376,16 @@ const razorpayWebhook = async (req, res) => {
               session,
             );
 
-            // Link orderId on Payment
+            // Link orderId on Payment, correct status for COD_PARTIAL
+            const isCodPartialWebhook = freshPayment.pendingOrderMeta?.paymentMode === 'COD_PARTIAL';
             await Payment.findByIdAndUpdate(
               freshPayment._id,
               {
                 $set: {
                   orderId: webhookOrder._id,
                   razorpayPaymentId: payload.id,
+                  // COD_PARTIAL: advance captured; remaining paid at door
+                  status: isCodPartialWebhook ? "partial_paid" : "captured",
                 },
               },
               { session },
