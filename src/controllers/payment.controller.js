@@ -1,22 +1,21 @@
-const mongoose = require("mongoose");
-const Order = require("../models/Order.model");
-const Cart = require("../models/Cart.model");
-const Payment = require("../models/Payment.model");
-const User = require("../models/User.model");
-const Coupon = require("../models/Coupon.model");
+const mongoose = require('mongoose');
+const Order = require('../models/Order.model');
+const Cart = require('../models/Cart.model');
+const Payment = require('../models/Payment.model');
+const User = require('../models/User.model');
+const Coupon = require('../models/Coupon.model');
 const {
   verifyPaymentSignature,
   verifyWebhookSignature,
   fetchRazorpayPayment,
   initiateRefund,
-} = require("../services/razorpay.service");
-const { sendOrderConfirmationEmail } = require("../services/email.service");
-const { deductStock } = require("../utils/stock");
-const { generateOrderNumber } = require("../utils/orderNumber");
-const ApiError = require("../utils/ApiError");
-const { sendResponse } = require("../utils/ApiResponse");
-const catchAsync = require("../utils/catchAsync");
-const logger = require("../utils/logger");
+} = require('../services/razorpay.service');
+const { sendOrderConfirmationEmail } = require('../services/email.service');
+const { deductStock } = require('../utils/stock');
+const ApiError = require('../utils/ApiError');
+const { sendResponse } = require('../utils/ApiResponse');
+const catchAsync = require('../utils/catchAsync');
+const logger = require('../utils/logger');
 
 // ─── Helper: increment coupon usageCount atomically ───────────────────────────
 const incrementCouponUsage = async (couponId, session) => {
@@ -55,10 +54,6 @@ const createOrderFromPayment = async (
     return existing;
   }
 
-  // ── Determine paymentMode and COD fields ──────────────────────────────────
-  const paymentMode = meta.paymentMode || 'ONLINE';
-  const isCodPartial = paymentMode === 'COD_PARTIAL';
-
   const order = await Order.create(
     [
       {
@@ -67,15 +62,14 @@ const createOrderFromPayment = async (
         userId,
         items: meta.items,
         shippingAddress: meta.shippingAddress,
-        // COD_PARTIAL uses 'cod_partial' as paymentMethod for Shiprocket differentiation
-        paymentMethod: isCodPartial ? 'cod_partial' : 'razorpay',
-        notes: meta.notes || "",
+        paymentMethod: 'razorpay',
+        notes: meta.notes || '',
         // Coupon
         couponCode: meta.couponCode || null,
         couponId: meta.couponId || null,
         discountAmount: meta.discountAmount || 0,
         discount: meta.discountAmount || 0,
-        // Shipping (stored for reference; actual carrier assigned at ready_for_pickup)
+        // Shipping
         courierId: meta.courierId || null,
         courierName: meta.courierName || null,
         shippingCost: meta.shippingCost || 0,
@@ -85,21 +79,14 @@ const createOrderFromPayment = async (
         subtotal: meta.subtotal,
         tax: meta.tax,
         total: meta.total,
-        // ── Partial COD Fields ──────────────────────────────────────────────
-        paymentMode,
-        codFee: meta.codFee || 0,
-        advancePaidAmount: meta.advancePaidAmount || 0,
-        codRemainingAmount: meta.codRemainingAmount || 0,
         // Payment link
         paymentId: payment._id,
-        // Status: confirmed immediately (advance payment captured)
-        status: "confirmed",
+        // Status: confirmed immediately after payment captured
+        status: 'confirmed',
         statusHistory: [
           {
-            status: "confirmed",
-            note: isCodPartial
-              ? `Advance ₹${meta.advancePaidAmount} captured. Remaining ₹${meta.codRemainingAmount} to be paid on delivery. Razorpay Payment ID: ${razorpayPaymentId}`
-              : `Payment captured. Razorpay Payment ID: ${razorpayPaymentId}`,
+            status: 'confirmed',
+            note: `Payment captured. Razorpay Payment ID: ${razorpayPaymentId}`,
             updatedBy: userId,
           },
         ],
@@ -124,13 +111,12 @@ const createOrderFromPayment = async (
 //      e. Increment coupon usageCount
 //   4. On oversell: auto-refund captured payment and return 409
 //   5. Send confirmation email (fire-and-forget)
-//   NOTE: NO Shiprocket calls here. Shipment is triggered at ready_for_pickup.
 
 const verifyPayment = catchAsync(async (req, res) => {
   const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
 
   if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
-    throw new ApiError(400, "Missing payment verification fields.");
+    throw new ApiError(400, 'Missing payment verification fields.');
   }
 
   // 1. Verify HMAC signature — security critical
@@ -143,27 +129,27 @@ const verifyPayment = catchAsync(async (req, res) => {
     logger.warn(
       `[verifyPayment] Signature mismatch. razorpayOrderId=${razorpayOrderId} userId=${req.user._id}`,
     );
-    throw new ApiError(400, "Payment verification failed. Invalid signature.");
+    throw new ApiError(400, 'Payment verification failed. Invalid signature.');
   }
 
   // 2. Load Payment record (contains all pending order metadata)
   const payment = await Payment.findOne({
     razorpayOrderId,
     userId: req.user._id,
-  }).select("+pendingOrderMeta");
+  }).select('+pendingOrderMeta');
 
   if (!payment) {
-    throw new ApiError(404, "Payment record not found.");
+    throw new ApiError(404, 'Payment record not found.');
   }
 
   // 2a. Idempotency: if payment already captured, return existing order
-  if (payment.status === "captured" && payment.orderId) {
+  if (payment.status === 'captured' && payment.orderId) {
     const existingOrder = await Order.findById(payment.orderId);
     if (existingOrder) {
       logger.info(
         `[verifyPayment] Order ${existingOrder.orderNumber} already confirmed — idempotent`,
       );
-      return sendResponse(res, 200, "Payment already verified.", {
+      return sendResponse(res, 200, 'Payment already verified.', {
         order: {
           _id: existingOrder._id,
           orderNumber: existingOrder.orderNumber,
@@ -176,21 +162,21 @@ const verifyPayment = catchAsync(async (req, res) => {
 
   // 3. Verify amount matches our Payment record (prevents amount manipulation)
   const rzpPayment = await fetchRazorpayPayment(razorpayPaymentId);
-  if (rzpPayment.status !== "captured") {
+  if (rzpPayment.status !== 'captured') {
     logger.warn(
       `[verifyPayment] Payment not captured. Status=${rzpPayment.status}`,
     );
-    throw new ApiError(400, "Payment not captured yet.");
+    throw new ApiError(400, 'Payment not captured yet.');
   }
-  if (rzpPayment.currency !== "INR") {
-    throw new ApiError(400, "Invalid currency.");
+  if (rzpPayment.currency !== 'INR') {
+    throw new ApiError(400, 'Invalid currency.');
   }
   if (rzpPayment.amount !== payment.amount) {
     logger.error(
       `[verifyPayment] AMOUNT MISMATCH! Expected=${payment.amount}, Got=${rzpPayment.amount}`,
       { razorpayOrderId, razorpayPaymentId },
     );
-    throw new ApiError(400, "Payment amount mismatch. Contact support.");
+    throw new ApiError(400, 'Payment amount mismatch. Contact support.');
   }
 
   // 4. MongoDB Transaction — all DB writes atomically
@@ -199,7 +185,7 @@ const verifyPayment = catchAsync(async (req, res) => {
 
   try {
     await session.withTransaction(async () => {
-      // 4a. Create Order from pendingOrderMeta (idempotent — skips if already exists)
+      // 4a. Create Order from pendingOrderMeta (idempotent)
       confirmedOrder = await createOrderFromPayment(
         payment,
         req.user._id,
@@ -207,8 +193,7 @@ const verifyPayment = catchAsync(async (req, res) => {
         session,
       );
 
-      // 4b. Update Payment record — link orderId, mark captured/partial_paid
-      const isCodPartial = payment.pendingOrderMeta?.paymentMode === 'COD_PARTIAL';
+      // 4b. Update Payment record — link orderId, mark captured
       await Payment.findByIdAndUpdate(
         payment._id,
         {
@@ -216,8 +201,7 @@ const verifyPayment = catchAsync(async (req, res) => {
             orderId: confirmedOrder._id,
             razorpayPaymentId,
             razorpaySignature,
-            // COD_PARTIAL: advance is captured; full payment only at delivery
-            status: isCodPartial ? "partial_paid" : "captured",
+            status: 'captured',
             paidAt: new Date(),
           },
         },
@@ -238,27 +222,26 @@ const verifyPayment = catchAsync(async (req, res) => {
       await incrementCouponUsage(confirmedOrder.couponId, session);
     });
   } catch (err) {
-    // Audit fix 1.2: If deductStock threw an oversell error, the transaction
-    // already rolled back. Payment is captured by Razorpay, so we must refund.
-    if (err.message && err.message.includes("Insufficient stock")) {
+    // If deductStock threw an oversell error, the transaction already rolled back.
+    // Payment is captured by Razorpay, so we must refund.
+    if (err.message && err.message.includes('Insufficient stock')) {
       logger.warn(
         `[verifyPayment] Oversell detected — initiating refund for ${razorpayPaymentId}`,
       );
       try {
-        if (payment.status !== "refunded") {
+        if (payment.status !== 'refunded') {
           await initiateRefund(razorpayPaymentId, payment.amount);
-          await Payment.findByIdAndUpdate(payment._id, { status: "refunded" });
+          await Payment.findByIdAndUpdate(payment._id, { status: 'refunded' });
         }
       } catch (refundErr) {
         logger.error(
           `[verifyPayment] Refund FAILED after oversell for ${razorpayPaymentId}:`,
           refundErr.message,
         );
-        // TODO: alert ops — customer paid but refund failed
       }
       throw new ApiError(
         409,
-        "One or more items went out of stock during checkout. Your payment will be refunded within 5-7 business days.",
+        'One or more items went out of stock during checkout. Your payment will be refunded within 5-7 business days.',
       );
     }
     throw err;
@@ -281,7 +264,7 @@ const verifyPayment = catchAsync(async (req, res) => {
     ),
   );
 
-  return sendResponse(res, 200, "Payment verified. Order confirmed.", {
+  return sendResponse(res, 200, 'Payment verified. Order confirmed.', {
     order: {
       _id: confirmedOrder._id,
       orderNumber: confirmedOrder.orderNumber,
@@ -295,25 +278,21 @@ const verifyPayment = catchAsync(async (req, res) => {
 //
 // Fallback path: fires if user closed browser before /verify ran.
 // Same logic as verifyPayment but triggered by Razorpay's server.
-// NO Shiprocket calls here either.
-//
-// Audit fix 1.4: uses findOneAndUpdate with $ne: 'captured' as an atomic lock
-// to ensure only one execution path (webhook OR /verify) claims the payment.
 
 const razorpayWebhook = async (req, res) => {
-  const signature = req.headers["x-razorpay-signature"];
+  const signature = req.headers['x-razorpay-signature'];
   const rawBody = req.body; // Buffer
 
   let isValid = false;
   try {
     isValid = verifyWebhookSignature(rawBody, signature);
   } catch (err) {
-    logger.warn("[razorpayWebhook] Signature verification threw:", err.message);
+    logger.warn('[razorpayWebhook] Signature verification threw:', err.message);
     return res.status(400).json({ received: false });
   }
 
   if (!isValid) {
-    logger.warn("[razorpayWebhook] Invalid signature — rejecting");
+    logger.warn('[razorpayWebhook] Invalid signature — rejecting');
     return res.status(400).json({ received: false });
   }
 
@@ -321,7 +300,7 @@ const razorpayWebhook = async (req, res) => {
   try {
     event = JSON.parse(rawBody.toString());
   } catch {
-    return res.status(400).json({ received: false, message: "Invalid JSON" });
+    return res.status(400).json({ received: false, message: 'Invalid JSON' });
   }
 
   const eventType = event.event;
@@ -331,26 +310,22 @@ const razorpayWebhook = async (req, res) => {
   try {
     switch (eventType) {
       // ── payment.captured ──────────────────────────────────────────────────
-      // Fallback: fires if user closed browser before /verify ran.
-      case "payment.captured": {
-        // Audit fix 1.4: atomic status flip — only one caller (webhook OR /verify) wins.
-        // findOneAndUpdate with $ne: 'captured' acts as a distributed lock.
-        // Also exclude 'partial_paid' to avoid double-processing COD_PARTIAL orders.
+      case 'payment.captured': {
+        // Atomic status flip — only one caller (webhook OR /verify) wins.
         const claimed = await Payment.findOneAndUpdate(
           {
             razorpayOrderId: payload.order_id,
-            status: { $nin: ["captured", "partial_paid"] }, // not yet processed
+            status: { $nin: ['captured'] },
           },
           {
             $set: {
               razorpayPaymentId: payload.id,
-              // Will be corrected below after checking paymentMode
-              status: "captured",
+              status: 'captured',
               paidAt: new Date(),
               webhookPayload: payload,
             },
           },
-          { new: true, select: "+pendingOrderMeta" },
+          { new: true, select: '+pendingOrderMeta' },
         );
 
         if (!claimed) {
@@ -360,15 +335,12 @@ const razorpayWebhook = async (req, res) => {
           break;
         }
 
-        // `claimed` is the freshly-updated Payment record
         const freshPayment = claimed;
-
         const session = await mongoose.startSession();
         let webhookOrder = null;
 
         try {
           await session.withTransaction(async () => {
-            // Create Order from pendingOrderMeta (idempotent)
             webhookOrder = await createOrderFromPayment(
               freshPayment,
               freshPayment.userId,
@@ -376,22 +348,18 @@ const razorpayWebhook = async (req, res) => {
               session,
             );
 
-            // Link orderId on Payment, correct status for COD_PARTIAL
-            const isCodPartialWebhook = freshPayment.pendingOrderMeta?.paymentMode === 'COD_PARTIAL';
             await Payment.findByIdAndUpdate(
               freshPayment._id,
               {
                 $set: {
                   orderId: webhookOrder._id,
                   razorpayPaymentId: payload.id,
-                  // COD_PARTIAL: advance captured; remaining paid at door
-                  status: isCodPartialWebhook ? "partial_paid" : "captured",
+                  status: 'captured',
                 },
               },
               { session },
             );
 
-            // Deduct stock — throws on oversell, rolls back txn
             await deductStock(webhookOrder.items, session);
 
             await Cart.findOneAndUpdate(
@@ -402,16 +370,15 @@ const razorpayWebhook = async (req, res) => {
             await incrementCouponUsage(webhookOrder.couponId, session);
           });
         } catch (err) {
-          // Audit fix 1.2: oversell refund path
-          if (err.message && err.message.includes("Insufficient stock")) {
+          if (err.message && err.message.includes('Insufficient stock')) {
             logger.warn(
               `[razorpayWebhook] Oversell detected — refunding ${payload.id}`,
             );
             try {
-              if (freshPayment.status !== "refunded") {
+              if (freshPayment.status !== 'refunded') {
                 await initiateRefund(payload.id, freshPayment.amount);
                 await Payment.findByIdAndUpdate(freshPayment._id, {
-                  status: "refunded",
+                  status: 'refunded',
                 });
               }
             } catch (refundErr) {
@@ -429,7 +396,7 @@ const razorpayWebhook = async (req, res) => {
 
         if (webhookOrder) {
           const user = await User.findById(webhookOrder.userId).select(
-            "email name",
+            'email name',
           );
           if (user) {
             sendOrderConfirmationEmail({
@@ -450,14 +417,14 @@ const razorpayWebhook = async (req, res) => {
       }
 
       // ── payment.failed ────────────────────────────────────────────────────
-      case "payment.failed": {
+      case 'payment.failed': {
         const payment = await Payment.findOne({
           razorpayOrderId: payload.order_id,
         });
         if (!payment) break;
 
         await Payment.findByIdAndUpdate(payment._id, {
-          $set: { status: "failed", webhookPayload: payload },
+          $set: { status: 'failed', webhookPayload: payload },
         });
 
         logger.info(
@@ -467,13 +434,13 @@ const razorpayWebhook = async (req, res) => {
       }
 
       // ── refund.created ────────────────────────────────────────────────────
-      case "refund.created": {
+      case 'refund.created': {
         const refundPayload = event.payload?.refund?.entity || {};
         await Payment.findOneAndUpdate(
           { razorpayPaymentId: refundPayload.payment_id },
           {
             $set: {
-              status: "refunded",
+              status: 'refunded',
               refundId: refundPayload.id,
               refundedAt: new Date(),
               refundAmount: refundPayload.amount,

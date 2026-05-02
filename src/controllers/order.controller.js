@@ -1,35 +1,44 @@
-const crypto = require("crypto");
-const mongoose = require("mongoose");
-const Order = require("../models/Order.model");
-const Cart = require("../models/Cart.model");
-const Payment = require("../models/Payment.model");
-const Product = require("../models/Product.model");
-const Coupon = require("../models/Coupon.model");
-const { initiateRefund } = require("../services/razorpay.service");
-const { createRazorpayOrder } = require("../services/razorpay.service");
+const crypto = require('crypto');
+const mongoose = require('mongoose');
+const Order = require('../models/Order.model');
+const Cart = require('../models/Cart.model');
+const Payment = require('../models/Payment.model');
+const Product = require('../models/Product.model');
+const Coupon = require('../models/Coupon.model');
+const { initiateRefund, createRazorpayOrder } = require('../services/razorpay.service');
 const {
   getAvailableCouriers,
   trackShipment,
-} = require("../services/shiprocket.service");
-const { generateOrderNumber } = require("../utils/orderNumber");
-const { restoreStock } = require("../utils/stock");
-const ApiError = require("../utils/ApiError");
-const { sendResponse } = require("../utils/ApiResponse");
-const catchAsync = require("../utils/catchAsync");
-const logger = require("../utils/logger");
+  selectBestCourier,
+} = require('../services/shiprocket.service');
+const { generateOrderNumber } = require('../utils/orderNumber');
+const { restoreStock } = require('../utils/stock');
+const ApiError = require('../utils/ApiError');
+const { sendResponse } = require('../utils/ApiResponse');
+const catchAsync = require('../utils/catchAsync');
+const logger = require('../utils/logger');
+
+// ── Delivery charge rule-based logic ──────────────────────────────────────────
+// Free delivery above FREE_DELIVERY_THRESHOLD; otherwise flat DELIVERY_FEE
+const FREE_DELIVERY_THRESHOLD = 999;
+const DELIVERY_FEE = 49;
+
+const calculateDeliveryCharge = (subtotal) => {
+  if (subtotal >= FREE_DELIVERY_THRESHOLD) return 0;
+  return DELIVERY_FEE;
+};
 
 // ─── Helper: validate & fetch coupon ─────────────────────────────────────────
-
 const resolveCoupon = async (code, subtotal) => {
   if (!code) return { coupon: null, discountAmount: 0 };
 
   const coupon = await Coupon.findOne({ code: code.toUpperCase().trim() });
   if (!coupon) throw new ApiError(400, `Coupon "${code}" not found.`);
-  if (!coupon.active) throw new ApiError(400, "Coupon is inactive.");
+  if (!coupon.active) throw new ApiError(400, 'Coupon is inactive.');
   if (coupon.expiryDate < new Date())
-    throw new ApiError(400, "Coupon has expired.");
+    throw new ApiError(400, 'Coupon has expired.');
   if (coupon.usageLimit !== null && coupon.usageCount >= coupon.usageLimit) {
-    throw new ApiError(400, "Coupon usage limit reached.");
+    throw new ApiError(400, 'Coupon usage limit reached.');
   }
   if (subtotal < coupon.minOrderAmount) {
     throw new ApiError(
@@ -43,8 +52,7 @@ const resolveCoupon = async (code, subtotal) => {
 };
 
 // ─── Helper: resolve cheapest prepaid courier & actual rate ──────────────────
-
-const resolveShippingCost = async (pincode, weightKg) => {
+const resolveShippingCost = async (pincode, weightKg, subtotal) => {
   try {
     const couriers = await getAvailableCouriers({
       deliveryPincode: pincode,
@@ -52,27 +60,31 @@ const resolveShippingCost = async (pincode, weightKg) => {
       isCod: false,
     });
 
-    // ❌ No courier → block order
     if (!couriers.length) {
-      throw new ApiError(400, "Delivery not available to this pincode.");
+      throw new ApiError(400, 'Delivery not available to this pincode.');
     }
 
-    // ✅ Pick first available courier (no sorting needed)
-    const selected = couriers[0];
+    const best = selectBestCourier(couriers);
+
+    if (!best) {
+      throw new ApiError(400, 'No suitable courier found.');
+    }
 
     return {
-      courierId: selected.courier_company_id,
-      courierName: selected.courier_name,
-      shippingCost: 60, // ✅ Flat price
-      etd: selected.etd ? String(selected.etd) : "5-7",
+      courierId: best.courier_company_id,
+      courierName: best.courier_name,
+      // Business pricing: free above threshold, flat fee otherwise
+      shippingCost: calculateDeliveryCharge(subtotal),
+      actualShippingCost: Math.round(best.rate),
+      etd: best.etd ? String(best.etd) : '5-7',
     };
   } catch (err) {
-    logger.warn("[resolveShippingCost] Failed", {
+    logger.warn('[resolveShippingCost] Failed', {
       error: err.message,
+      pincode,
+      weightKg,
     });
-
-    // ❌ DO NOT silently allow order
-    throw new ApiError(400, "Delivery not available to this location.");
+    throw new ApiError(400, 'Delivery not available to this location.');
   }
 };
 
@@ -85,30 +97,27 @@ const resolveShippingCost = async (pincode, weightKg) => {
 //   4. Create Payment record with pendingOrderMeta (no Order in DB yet)
 //   5. Return Razorpay details to frontend → user pays
 //   6. Order is created ONLY inside verifyPayment / webhook after signature check
-//
-// Audit fix 2.3: idempotency key is now a hash of cart contents, not the
-// cart.updatedAt timestamp. This prevents orphaned Payment records when a user
-// adds/removes/re-adds items that result in the same cart.
 
 const placeOrder = catchAsync(async (req, res) => {
-  const { shippingAddress, notes, couponCode, paymentMode } = req.body;
+  const { shippingAddress, notes, couponCode } = req.body;
 
-  // ── Validate paymentMode ────────────────────────────────────────────────────
-  // Accepted values: 'ONLINE' (default) | 'COD_PARTIAL'
-  const resolvedPaymentMode =
-    paymentMode === "COD_PARTIAL" ? "COD_PARTIAL" : "ONLINE";
+  // Reject any attempt to use COD or bypass online payment
+  if (req.body.paymentMode && req.body.paymentMode !== 'ONLINE') {
+    throw new ApiError(400, 'Only online payment is accepted.');
+  }
+  if (req.body.paymentMethod && req.body.paymentMethod !== 'razorpay') {
+    throw new ApiError(400, 'Only Razorpay online payment is accepted.');
+  }
 
   // 1. Fetch cart
   const cart = await Cart.findOne({ userId: req.user._id });
   if (!cart || cart.items.length === 0) {
-    throw new ApiError(400, "Your cart is empty.");
+    throw new ApiError(400, 'Your cart is empty.');
   }
 
-  // 2. Idempotency guard — hash cart contents (not timestamp) so that
-  //    identical carts from different tabs or after add/remove/re-add cycles
-  //    produce the same key and reuse the existing Razorpay order.
+  // 2. Idempotency guard
   const cartHash = crypto
-    .createHash("sha256")
+    .createHash('sha256')
     .update(
       JSON.stringify(
         cart.items.map((i) => ({
@@ -118,16 +127,16 @@ const placeOrder = catchAsync(async (req, res) => {
         })),
       ),
     )
-    .digest("hex")
+    .digest('hex')
     .slice(0, 16);
 
-  const idempotencyKey = `${req.user._id}-${cartHash}-${couponCode || "none"}-${shippingAddress.pincode}-${resolvedPaymentMode}`;
+  const idempotencyKey = `${req.user._id}-${cartHash}-${couponCode || 'none'}-${shippingAddress.pincode}-ONLINE`;
 
   const existingPayment = await Payment.findOne({
-    "pendingOrderMeta.idempotencyKey": idempotencyKey,
-  }).select("+pendingOrderMeta");
+    'pendingOrderMeta.idempotencyKey': idempotencyKey,
+  }).select('+pendingOrderMeta');
 
-  if (existingPayment && existingPayment.status === "created") {
+  if (existingPayment && existingPayment.status === 'created') {
     logger.info(
       `[placeOrder] Idempotency hit — returning existing payment ${existingPayment.razorpayOrderId}`,
     );
@@ -135,7 +144,7 @@ const placeOrder = catchAsync(async (req, res) => {
     return sendResponse(
       res,
       200,
-      "Order already initiated. Complete payment to confirm.",
+      'Order already initiated. Complete payment to confirm.',
       {
         order: {
           orderNumber: meta.orderNumber,
@@ -147,11 +156,6 @@ const placeOrder = catchAsync(async (req, res) => {
           couponCode: meta.couponCode,
           courierName: meta.courierName,
           etd: meta.etd,
-          // ── Partial COD fields ───────────────────────────
-          paymentMode: meta.paymentMode,
-          codFee: meta.codFee || 0,
-          advancePaidAmount: meta.advancePaidAmount || 0,
-          codRemainingAmount: meta.codRemainingAmount || 0,
         },
         razorpay: {
           orderId: existingPayment.razorpayOrderId,
@@ -196,107 +200,78 @@ const placeOrder = catchAsync(async (req, res) => {
       variantId: variant._id,
       name: product.name,
       size: variant.size,
-      image: product.images?.[0] || "",
+      image: product.images?.[0] || '',
       price: variant.price,
       quantity: cartItem.quantity,
-      weightGrams: itemWeightGrams, // audit fix 5.4: store actual weight
+      weightGrams: itemWeightGrams,
     });
 
     subtotal += variant.price * cartItem.quantity;
     totalWeightGrams += itemWeightGrams * cartItem.quantity;
   }
 
-  // 4. Validate coupon (check validity only — do NOT increment usageCount yet)
+  // 4. Validate coupon
   const { coupon, discountAmount } = await resolveCoupon(couponCode, subtotal);
 
   // 5. Resolve shipping cost from Shiprocket serviceability
   const weightKg = Math.max(0.1, totalWeightGrams / 1000);
-  const { courierId, courierName, shippingCost, etd } =
-    await resolveShippingCost(shippingAddress.pincode, weightKg);
+  const { courierId, courierName, shippingCost, actualShippingCost, etd } =
+    await resolveShippingCost(shippingAddress.pincode, weightKg, subtotal);
 
   // 6. Calculate totals
   const taxRate = 0;
   const tax = Math.round(subtotal * taxRate);
-
-  // ── Partial COD Calculation ────────────────────────────────────────────────
-  // For COD_PARTIAL: add ₹50 COD handling fee (charged by Shiprocket).
-  // IMPORTANT: advancePaidAmount is 20% of (subtotal + shipping + codFee),
-  // i.e., the COD fee is included BEFORE splitting 20/80.
-  // Backend always recalculates — never trusts frontend values.
-  const COD_FEE = 50;
-  const codFee = resolvedPaymentMode === "COD_PARTIAL" ? COD_FEE : 0;
-  const total = Math.max(
-    1,
-    subtotal + shippingCost + tax - discountAmount + codFee,
-  );
-
-  // For COD_PARTIAL: Razorpay collects only 20% upfront; remaining 80% paid at door
-  const advancePaidAmount =
-    resolvedPaymentMode === "COD_PARTIAL" ? Math.round(total * 0.2) : total;
-  const codRemainingAmount =
-    resolvedPaymentMode === "COD_PARTIAL" ? total - advancePaidAmount : 0;
+  const total = Math.max(1, subtotal + shippingCost + tax - discountAmount);
 
   // Amount to charge via Razorpay (in paise)
-  const razorpayAmountPaise = advancePaidAmount * 100;
+  const razorpayAmountPaise = total * 100;
 
-  // 7. Create Razorpay order (with idempotency key — audit fix 2.6)
+  // 7. Create Razorpay order
   const orderNumber = generateOrderNumber();
   const rzpOrder = await createRazorpayOrder(razorpayAmountPaise, orderNumber, {
     userId: req.user._id.toString(),
     customer: req.user.name,
-    paymentMode: resolvedPaymentMode,
   });
 
   // 8. Create Payment record with all pending order metadata.
   //    NO Order document is written to MongoDB at this point.
-  //    The Order will be created inside verifyPayment after signature verification.
   await Payment.create({
-    orderId: null, // will be set after order creation in verifyPayment
+    orderId: null,
     userId: req.user._id,
-    method: "razorpay",
-    amount: razorpayAmountPaise, // advance amount only for COD_PARTIAL
-    currency: "INR",
-    status: "created",
+    method: 'razorpay',
+    amount: razorpayAmountPaise,
+    currency: 'INR',
+    status: 'created',
     razorpayOrderId: rzpOrder.id,
     pendingOrderMeta: {
-      // Idempotency
       idempotencyKey,
       orderNumber,
-      // Cart snapshot
       items: orderItems,
       shippingAddress,
-      notes: notes || "",
-      // Coupon
+      notes: notes || '',
       couponCode: coupon ? coupon.code : null,
       couponId: coupon ? coupon._id : null,
       discountAmount,
-      // Shipping
       courierId,
       courierName,
       shippingCost,
+      actualShippingCost,
       etd,
-      // Pricing
       subtotal,
       tax,
       total,
-      // ── Partial COD fields ────────────────────────────────────────────────
-      paymentMode: resolvedPaymentMode,
-      codFee,
-      advancePaidAmount,
-      codRemainingAmount,
     },
   });
 
   logger.info(
     `[placeOrder] Razorpay order ${rzpOrder.id} created for user ${req.user._id}. ` +
-      `Mode=${resolvedPaymentMode}. Advance=${advancePaidAmount}. ` +
-      `Order will be created after payment.`,
+      `Total=₹${total}. Order will be created after payment.`,
   );
 
   return sendResponse(
     res,
     201,
-    "Payment initiated. Complete payment to place order.",
+    'Payment initiated. Complete payment to place order.',
     {
       order: {
         orderNumber,
@@ -308,15 +283,10 @@ const placeOrder = catchAsync(async (req, res) => {
         couponCode: coupon ? coupon.code : null,
         courierName,
         etd,
-        // ── Partial COD fields ───────────────────────────
-        paymentMode: resolvedPaymentMode,
-        codFee,
-        advancePaidAmount,
-        codRemainingAmount,
       },
       razorpay: {
         orderId: rzpOrder.id,
-        amount: rzpOrder.amount, // advance only for COD_PARTIAL
+        amount: rzpOrder.amount,
         currency: rzpOrder.currency,
         keyId: process.env.RAZORPAY_KEY_ID,
       },
@@ -339,14 +309,14 @@ const getMyOrders = catchAsync(async (req, res) => {
       .sort({ createdAt: -1 })
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
-      .select("-statusHistory -trackingHistory"),
+      .select('-statusHistory -trackingHistory'),
     Order.countDocuments(filter),
   ]);
 
   return sendResponse(
     res,
     200,
-    "Orders fetched.",
+    'Orders fetched.',
     { orders },
     { total, page: pageNum, pages: Math.ceil(total / limitNum) },
   );
@@ -358,18 +328,14 @@ const getOrder = catchAsync(async (req, res) => {
   const order = await Order.findOne({
     _id: req.params.id,
     userId: req.user._id,
-  }).populate("paymentId", "method status amount paidAt razorpayPaymentId");
+  }).populate('paymentId', 'method status amount paidAt razorpayPaymentId');
 
-  if (!order) throw new ApiError(404, "Order not found.");
+  if (!order) throw new ApiError(404, 'Order not found.');
 
-  return sendResponse(res, 200, "Order fetched.", { order });
+  return sendResponse(res, 200, 'Order fetched.', { order });
 });
 
 // ─── Cancel Order (User) ──────────────────────────────────────────────────────
-// Allowed: status = confirmed OR preparing AND no AWB assigned
-//
-// Audit fix 1.5: all mutations are wrapped in a MongoDB transaction so that
-// stock restore, coupon reverse, order save, and payment update are atomic.
 
 const cancelOrder = catchAsync(async (req, res) => {
   const { reason } = req.body;
@@ -377,15 +343,15 @@ const cancelOrder = catchAsync(async (req, res) => {
   const order = await Order.findOne({
     _id: req.params.id,
     userId: req.user._id,
-  }).populate("paymentId");
+  }).populate('paymentId');
 
-  if (!order) throw new ApiError(404, "Order not found.");
+  if (!order) throw new ApiError(404, 'Order not found.');
 
   if (order.awbCode) {
-    throw new ApiError(400, "Order cannot be cancelled — already dispatched.");
+    throw new ApiError(400, 'Order cannot be cancelled — already dispatched.');
   }
 
-  if (order.status !== "confirmed") {
+  if (order.status !== 'confirmed') {
     throw new ApiError(
       400,
       `Order can only be cancelled when it is in "confirmed" status.`,
@@ -393,15 +359,12 @@ const cancelOrder = catchAsync(async (req, res) => {
   }
 
   const session = await mongoose.startSession();
-
   let paymentDoc = order.paymentId;
 
   try {
     await session.withTransaction(async () => {
-      // Restore stock
       await restoreStock(order.items, session);
 
-      // Reverse coupon
       if (order.couponId && order.discountAmount > 0) {
         await Coupon.findByIdAndUpdate(
           order.couponId,
@@ -410,14 +373,13 @@ const cancelOrder = catchAsync(async (req, res) => {
         );
       }
 
-      // Update order
-      order.status = "cancelled";
+      order.status = 'cancelled';
       order.cancelledBy = req.user._id;
       order.cancelledAt = new Date();
-      order.cancelReason = reason || "Cancelled by customer.";
+      order.cancelReason = reason || 'Cancelled by customer.';
 
       order.statusHistory.push({
-        status: "cancelled",
+        status: 'cancelled',
         note: order.cancelReason,
         updatedBy: req.user._id,
       });
@@ -428,9 +390,9 @@ const cancelOrder = catchAsync(async (req, res) => {
     await session.endSession();
   }
 
-  // 🔥 IMPORTANT: Refund AFTER transaction
-  if (paymentDoc && paymentDoc.method === "razorpay") {
-    if (paymentDoc.status !== "refunded") {
+  // Refund AFTER transaction
+  if (paymentDoc && paymentDoc.method === 'razorpay') {
+    if (paymentDoc.status !== 'refunded') {
       try {
         const refund = await initiateRefund(
           paymentDoc.razorpayPaymentId,
@@ -438,7 +400,7 @@ const cancelOrder = catchAsync(async (req, res) => {
         );
 
         await Payment.findByIdAndUpdate(paymentDoc._id, {
-          status: "refunded",
+          status: 'refunded',
           refundId: refund.id,
           refundedAt: new Date(),
         });
@@ -452,13 +414,13 @@ const cancelOrder = catchAsync(async (req, res) => {
         );
 
         await Payment.findByIdAndUpdate(paymentDoc._id, {
-          status: "refund_failed", // 🔥 important
+          status: 'refund_failed',
         });
       }
     }
   }
 
-  return sendResponse(res, 200, "Order cancelled successfully.", { order });
+  return sendResponse(res, 200, 'Order cancelled successfully.', { order });
 });
 
 // ─── Track Order ──────────────────────────────────────────────────────────────
@@ -469,24 +431,24 @@ const trackOrder = catchAsync(async (req, res) => {
     userId: req.user._id,
   });
 
-  if (!order) throw new ApiError(404, "Order not found.");
+  if (!order) throw new ApiError(404, 'Order not found.');
 
   if (!order.awbCode) {
-    return sendResponse(res, 200, "Order has not been shipped yet.", {
+    return sendResponse(res, 200, 'Order has not been shipped yet.', {
       order,
       tracking: null,
     });
   }
 
   const CACHE_TTL_MS = 30 * 60 * 1000;
-  const terminalStatuses = ["delivered", "cancelled", "rto", "refunded"];
+  const terminalStatuses = ['delivered', 'cancelled', 'rto', 'refunded'];
   const isTerminal = terminalStatuses.includes(order.status);
   const isFresh =
     order.trackingUpdatedAt &&
     Date.now() - order.trackingUpdatedAt.getTime() < CACHE_TTL_MS;
 
   if (isTerminal || isFresh) {
-    return sendResponse(res, 200, "Tracking fetched (cached).", {
+    return sendResponse(res, 200, 'Tracking fetched (cached).', {
       order,
       tracking: {
         currentStatus: order.trackingStatus,
@@ -506,7 +468,7 @@ const trackOrder = catchAsync(async (req, res) => {
     },
   });
 
-  return sendResponse(res, 200, "Tracking information fetched.", {
+  return sendResponse(res, 200, 'Tracking information fetched.', {
     order,
     tracking,
   });

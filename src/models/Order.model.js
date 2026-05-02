@@ -14,7 +14,6 @@ const orderItemSchema = new mongoose.Schema(
     image: { type: String, default: '' },
     price: { type: Number, required: true },
     quantity: { type: Number, required: true, min: 1 },
-    // Actual product weight in grams — used for Shiprocket payload (audit fix 5.4)
     weightGrams: { type: Number, default: 500 },
   },
   { _id: true },
@@ -62,15 +61,14 @@ const orderSchema = new mongoose.Schema(
   {
     orderNumber: {
       type: String,
-      unique: true, // ✅ creates unique index
+      unique: true,
       required: true,
     },
 
-    // Prevent duplicate orders
     idempotencyKey: {
       type: String,
       sparse: true,
-      unique: true, // ✅ unique index
+      unique: true,
     },
 
     userId: {
@@ -88,26 +86,13 @@ const orderSchema = new mongoose.Schema(
 
     shippingAddress: { type: shippingAddressSchema, required: true },
 
+    // Only razorpay is accepted — COD is not supported
     paymentMethod: {
       type: String,
-      enum: ['razorpay', 'cod_partial'],
+      enum: ['razorpay'],
       default: 'razorpay',
       required: true,
     },
-
-    // ── Partial COD Fields ────────────────────────────────────────────────────
-    // paymentMode distinguishes full online vs partial COD
-    paymentMode: {
-      type: String,
-      enum: ['ONLINE', 'COD_PARTIAL'],
-      default: 'ONLINE',
-    },
-    // ₹50 COD handling fee charged by Shiprocket (only for COD_PARTIAL)
-    codFee: { type: Number, default: 0 },
-    // Amount paid online upfront (20% of total incl. COD fee)
-    advancePaidAmount: { type: Number, default: 0 },
-    // Remaining amount to be paid in cash at delivery (80% of total)
-    codRemainingAmount: { type: Number, default: 0 },
 
     paymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment' },
 
@@ -148,7 +133,7 @@ const orderSchema = new mongoose.Schema(
 
     awbRetryCount: { type: Number, default: 0 },
 
-    // ── RTO fields (audit fix 1.1 / 5.1) ────────────────────────────────────
+    // ── RTO fields ───────────────────────────────────────────────────────────
     rtoStatus: {
       type: String,
       enum: ['none', 'initiated', 'in_transit', 'delivered'],
@@ -194,15 +179,15 @@ const orderSchema = new mongoose.Schema(
   },
 );
 
-// ── Indexes (clean, no duplicates) ───────────────────────────────────────────
+// ── Indexes ───────────────────────────────────────────────────────────────────
 orderSchema.index({ userId: 1, createdAt: -1 });
 orderSchema.index({ status: 1, createdAt: -1 });
 orderSchema.index({ awbCode: 1 });
-orderSchema.index({ awbCode: 1, status: 1 }); // 🔥 cron optimization
+orderSchema.index({ awbCode: 1, status: 1 });
 orderSchema.index({ shiprocketOrderId: 1 });
 orderSchema.index({ trackingStatus: 1, createdAt: -1, awbRetryCount: 1 });
 orderSchema.index({ couponCode: 1 });
-orderSchema.index({ rtoStatus: 1, autoRefundAttempted: 1 }); // audit fix 5.1
+orderSchema.index({ rtoStatus: 1, autoRefundAttempted: 1 });
 
 // ── Virtuals ─────────────────────────────────────────────────────────────────
 orderSchema.virtual('isDelivered').get(function () {

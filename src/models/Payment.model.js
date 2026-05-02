@@ -1,35 +1,34 @@
-const mongoose = require("mongoose");
+const mongoose = require('mongoose');
 
 const paymentSchema = new mongoose.Schema(
   {
     // orderId is null until order is created post-payment-verification
     orderId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Order",
+      ref: 'Order',
       default: null,
     },
     userId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
+      ref: 'User',
       required: true,
     },
 
     method: {
       type: String,
-      enum: ["razorpay"],
-      default: "razorpay",
+      enum: ['razorpay'],
+      default: 'razorpay',
       required: true,
     },
 
     // Amount in paise (INR × 100)
     amount: { type: Number, required: true },
-    currency: { type: String, default: "INR" },
+    currency: { type: String, default: 'INR' },
 
     status: {
       type: String,
-      // partial_paid: advance captured for COD_PARTIAL orders (rest paid on delivery)
-      enum: ["created", "captured", "partial_paid", "failed", "refunded"],
-      default: "created",
+      enum: ['created', 'captured', 'failed', 'refunded', 'refund_failed'],
+      default: 'created',
     },
 
     // Razorpay IDs
@@ -62,8 +61,6 @@ paymentSchema.index({ orderId: 1 });
 paymentSchema.index({ userId: 1 });
 paymentSchema.index({ razorpayOrderId: 1 }, { unique: true, sparse: true });
 paymentSchema.index({ razorpayPaymentId: 1 });
+paymentSchema.index({ 'pendingOrderMeta.idempotencyKey': 1 }, { sparse: true });
 
-// Idempotency key index — fixes full collection scan on every checkout (audit fix 5.3)
-paymentSchema.index({ "pendingOrderMeta.idempotencyKey": 1 }, { sparse: true });
-
-module.exports = mongoose.model("Payment", paymentSchema);
+module.exports = mongoose.model('Payment', paymentSchema);

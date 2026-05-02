@@ -52,13 +52,13 @@ const getDashboard = catchAsync(async (req, res) => {
     }),
     User.countDocuments({ role: 'user' }),
     Payment.aggregate([
-      { $match: { status: { $in: ['captured', 'cod_collected'] } } },
+      { $match: { status: { $in: ['captured', 'captured'] } } },
       { $group: { _id: null, total: { $sum: '$amount' } } },
     ]),
     Payment.aggregate([
       {
         $match: {
-          status: { $in: ['captured', 'cod_collected'] },
+          status: { $in: ['captured', 'captured'] },
           createdAt: { $gte: startOfMonth },
         },
       },
