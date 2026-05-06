@@ -24,6 +24,13 @@ const {
   deleteCoupon,
 } = require("../controllers/coupon.controller");
 
+const {
+  createCombo,
+  updateCombo,
+  deleteCombo,
+  getCombos: getAdminCombos,
+} = require("../controllers/combo.controller");
+
 const { protect } = require("../middleware/auth.middleware");
 const { restrictTo } = require("../middleware/admin.middleware");
 const { validate, schemas } = require("../middleware/validate.middleware");
@@ -68,5 +75,11 @@ router.get("/coupons", getAllCoupons);
 router.post("/coupons", createCoupon);
 router.put("/coupons/:id", updateCoupon);
 router.delete("/coupons/:id", deleteCoupon);
+
+// ── Combo Management (Admin) ───────────────────────────────────────────────────
+router.get("/combos", getAdminCombos);
+router.post("/combos", createCombo);
+router.put("/combos/:id", updateCombo);
+router.delete("/combos/:id", deleteCombo);
 
 module.exports = router;

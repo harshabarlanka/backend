@@ -1,5 +1,6 @@
 const Cart = require('../models/Cart.model');
 const Product = require('../models/Product.model');
+const Combo = require('../models/Combo.model');
 const ApiError = require('../utils/ApiError');
 const { sendResponse } = require('../utils/ApiResponse');
 const catchAsync = require('../utils/catchAsync');
@@ -18,7 +19,7 @@ const getCart = catchAsync(async (req, res) => {
   return sendResponse(res, 200, 'Cart fetched.', { cart });
 });
 
-// ─── Add Item to Cart ─────────────────────────────────────────────────────────
+// ─── Add Product Item to Cart ─────────────────────────────────────────────────
 
 const addToCart = catchAsync(async (req, res) => {
   const { productId, variantId, quantity } = req.body;
@@ -48,8 +49,9 @@ const addToCart = catchAsync(async (req, res) => {
   // Check if the same variant is already in cart
   const existingItemIndex = cart.items.findIndex(
     (item) =>
-      item.productId.toString() === productId &&
-      item.variantId.toString() === variantId
+      item.itemType === 'product' &&
+      item.productId?.toString() === productId &&
+      item.variantId?.toString() === variantId,
   );
 
   if (existingItemIndex > -1) {
@@ -67,6 +69,7 @@ const addToCart = catchAsync(async (req, res) => {
     cart.items[existingItemIndex].price = variant.price;
   } else {
     cart.items.push({
+      itemType: 'product',
       productId: product._id,
       variantId: variant._id,
       name: product.name,
@@ -82,6 +85,73 @@ const addToCart = catchAsync(async (req, res) => {
   return sendResponse(res, 200, 'Item added to cart.', { cart });
 });
 
+// ─── Add Combo Item to Cart ───────────────────────────────────────────────────
+
+const addComboToCart = catchAsync(async (req, res) => {
+  const { comboId, quantity = 1 } = req.body;
+
+  const combo = await Combo.findById(comboId).populate(
+    'products.product',
+    'name images variants isActive',
+  );
+
+  if (!combo || !combo.isActive) {
+    throw new ApiError(404, 'Combo not found or unavailable.');
+  }
+
+  // Verify stock for each product in combo
+  for (const entry of combo.products) {
+    const product = entry.product;
+    if (!product || !product.isActive) {
+      throw new ApiError(400, `A product in this combo is no longer available.`);
+    }
+    // Check that at least one variant has sufficient stock
+    const hasStock = product.variants.some(
+      (v) => v.stock >= entry.quantity * quantity,
+    );
+    if (!hasStock) {
+      throw new ApiError(400, `Insufficient stock for "${product.name}" in this combo.`);
+    }
+  }
+
+  let cart = await Cart.findOne({ userId: req.user._id });
+  if (!cart) {
+    cart = new Cart({ userId: req.user._id, items: [] });
+  }
+
+  // Check if same combo already in cart
+  const existingIndex = cart.items.findIndex(
+    (item) =>
+      item.itemType === 'combo' &&
+      item.comboId?.toString() === comboId,
+  );
+
+  if (existingIndex > -1) {
+    const newQty = cart.items[existingIndex].quantity + quantity;
+    if (newQty > 20) throw new ApiError(400, 'Cannot add more than 20 of one combo.');
+    cart.items[existingIndex].quantity = newQty;
+    cart.items[existingIndex].price = combo.price;
+  } else {
+    cart.items.push({
+      itemType: 'combo',
+      comboId: combo._id,
+      name: combo.name,
+      image: combo.images?.[0] || combo.products[0]?.product?.images?.[0] || '',
+      price: combo.price,
+      quantity,
+      comboProducts: combo.products.map((e) => ({
+        productId: e.product._id,
+        name: e.product.name,
+        quantity: e.quantity,
+      })),
+    });
+  }
+
+  await cart.save();
+
+  return sendResponse(res, 200, 'Combo added to cart.', { cart });
+});
+
 // ─── Update Cart Item Quantity ────────────────────────────────────────────────
 
 const updateCartItem = catchAsync(async (req, res) => {
@@ -94,17 +164,24 @@ const updateCartItem = catchAsync(async (req, res) => {
   const item = cart.items.id(itemId);
   if (!item) throw new ApiError(404, 'Cart item not found.');
 
-  // Verify stock still available
-  const product = await Product.findById(item.productId);
-  const variant = product?.variants.id(item.variantId);
+  if (item.itemType === 'product') {
+    // Verify stock still available
+    const product = await Product.findById(item.productId);
+    const variant = product?.variants.id(item.variantId);
 
-  if (!variant || variant.stock < quantity) {
-    throw new ApiError(400, `Only ${variant?.stock || 0} units available in stock.`);
+    if (!variant || variant.stock < quantity) {
+      throw new ApiError(400, `Only ${variant?.stock || 0} units available in stock.`);
+    }
+
+    item.quantity = quantity;
+    // Refresh price
+    item.price = variant.price;
+  } else if (item.itemType === 'combo') {
+    item.quantity = quantity;
+    // Refresh combo price
+    const combo = await Combo.findById(item.comboId);
+    if (combo) item.price = combo.price;
   }
-
-  item.quantity = quantity;
-  // Refresh price
-  item.price = variant.price;
 
   await cart.save();
 
@@ -134,7 +211,7 @@ const clearCart = catchAsync(async (req, res) => {
   await Cart.findOneAndUpdate(
     { userId: req.user._id },
     { $set: { items: [], coupon: {} } },
-    { new: true }
+    { new: true },
   );
 
   return sendResponse(res, 200, 'Cart cleared.');
@@ -143,6 +220,7 @@ const clearCart = catchAsync(async (req, res) => {
 module.exports = {
   getCart,
   addToCart,
+  addComboToCart,
   updateCartItem,
   removeCartItem,
   clearCart,

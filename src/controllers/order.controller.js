@@ -4,6 +4,7 @@ const Order = require('../models/Order.model');
 const Cart = require('../models/Cart.model');
 const Payment = require('../models/Payment.model');
 const Product = require('../models/Product.model');
+const Combo = require('../models/Combo.model');
 const Coupon = require('../models/Coupon.model');
 const { initiateRefund, createRazorpayOrder } = require('../services/razorpay.service');
 const {
@@ -173,41 +174,94 @@ const placeOrder = catchAsync(async (req, res) => {
   let totalWeightGrams = 0;
 
   for (const cartItem of cart.items) {
-    const product = await Product.findById(cartItem.productId);
-    if (!product || !product.isActive) {
-      throw new ApiError(
-        400,
-        `Product "${cartItem.name}" is no longer available.`,
+    if (cartItem.itemType === 'combo') {
+      // ── Combo item ──────────────────────────────────────────────────────────
+      const combo = await Combo.findById(cartItem.comboId).populate(
+        'products.product',
+        'name images variants isActive weight',
       );
+
+      if (!combo || !combo.isActive) {
+        throw new ApiError(400, `Combo "${cartItem.name}" is no longer available.`);
+      }
+
+      // Check stock for each product in combo
+      for (const entry of combo.products) {
+        const product = entry.product;
+        if (!product || !product.isActive) {
+          throw new ApiError(400, `A product in combo "${combo.name}" is no longer available.`);
+        }
+        const neededQty = entry.quantity * cartItem.quantity;
+        const hasStock = product.variants.some((v) => v.stock >= neededQty);
+        if (!hasStock) {
+          throw new ApiError(
+            400,
+            `Insufficient stock for "${product.name}" in combo "${combo.name}".`,
+          );
+        }
+        totalWeightGrams += (product.weight || 500) * neededQty;
+      }
+
+      orderItems.push({
+        itemType: 'combo',
+        comboId: combo._id,
+        name: combo.name,
+        image: combo.images?.[0] || combo.products[0]?.product?.images?.[0] || '',
+        price: combo.price,
+        quantity: cartItem.quantity,
+        size: '',
+        weightGrams: 500,
+        comboSnapshot: {
+          name: combo.name,
+          price: combo.price,
+          includedProducts: combo.products.map((e) => ({
+            productId: e.product._id,
+            name: e.product.name,
+            quantity: e.quantity,
+          })),
+        },
+      });
+
+      subtotal += combo.price * cartItem.quantity;
+    } else {
+      // ── Product item ────────────────────────────────────────────────────────
+      const product = await Product.findById(cartItem.productId);
+      if (!product || !product.isActive) {
+        throw new ApiError(
+          400,
+          `Product "${cartItem.name}" is no longer available.`,
+        );
+      }
+
+      const variant = product.variants.id(cartItem.variantId);
+      if (!variant) {
+        throw new ApiError(400, `Variant for "${cartItem.name}" not found.`);
+      }
+
+      if (variant.stock < cartItem.quantity) {
+        throw new ApiError(
+          400,
+          `Insufficient stock for "${cartItem.name} (${variant.size})". Only ${variant.stock} units left.`,
+        );
+      }
+
+      const itemWeightGrams = product.weight || 500;
+
+      orderItems.push({
+        itemType: 'product',
+        productId: product._id,
+        variantId: variant._id,
+        name: product.name,
+        size: variant.size,
+        image: product.images?.[0] || '',
+        price: variant.price,
+        quantity: cartItem.quantity,
+        weightGrams: itemWeightGrams,
+      });
+
+      subtotal += variant.price * cartItem.quantity;
+      totalWeightGrams += itemWeightGrams * cartItem.quantity;
     }
-
-    const variant = product.variants.id(cartItem.variantId);
-    if (!variant) {
-      throw new ApiError(400, `Variant for "${cartItem.name}" not found.`);
-    }
-
-    if (variant.stock < cartItem.quantity) {
-      throw new ApiError(
-        400,
-        `Insufficient stock for "${cartItem.name} (${variant.size})". Only ${variant.stock} units left.`,
-      );
-    }
-
-    const itemWeightGrams = product.weight || 500;
-
-    orderItems.push({
-      productId: product._id,
-      variantId: variant._id,
-      name: product.name,
-      size: variant.size,
-      image: product.images?.[0] || '',
-      price: variant.price,
-      quantity: cartItem.quantity,
-      weightGrams: itemWeightGrams,
-    });
-
-    subtotal += variant.price * cartItem.quantity;
-    totalWeightGrams += itemWeightGrams * cartItem.quantity;
   }
 
   // 4. Validate coupon

@@ -1,19 +1,38 @@
 const mongoose = require('mongoose');
 
-const cartItemSchema = new mongoose.Schema(
+// ─── Product cart item ────────────────────────────────────────────────────────
+const productCartItemSchema = new mongoose.Schema(
   {
+    itemType: { type: String, enum: ['product', 'combo'], default: 'product' },
+
+    // For product items
     productId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Product',
-      required: true,
     },
     variantId: {
       type: mongoose.Schema.Types.ObjectId,
-      required: true,
     },
+    size: { type: String, default: '' },
+
+    // For combo items
+    comboId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Combo',
+    },
+    // Snapshot of included products for combo (stored for display)
+    comboProducts: [
+      {
+        productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+        name: { type: String },
+        quantity: { type: Number, default: 1 },
+        _id: false,
+      },
+    ],
+
+    // Common fields
     name: { type: String, required: true },
     image: { type: String, default: '' },
-    size: { type: String, required: true },
     price: { type: Number, required: true },
     quantity: {
       type: Number,
@@ -22,7 +41,7 @@ const cartItemSchema = new mongoose.Schema(
       max: [20, 'Cannot add more than 20 of one item'],
     },
   },
-  { _id: true }
+  { _id: true },
 );
 
 const cartSchema = new mongoose.Schema(
@@ -32,19 +51,19 @@ const cartSchema = new mongoose.Schema(
       ref: 'User',
       required: true,
     },
-    items: [cartItemSchema],
+    items: [productCartItemSchema],
     coupon: {
       code: { type: String, trim: true, uppercase: true },
       discountPercent: { type: Number, default: 0 },
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // ✅ SINGLE source of truth for index
 cartSchema.index({ userId: 1 }, { unique: true });
 
-// ─── Virtuals ─────────────────────────────────────────
+// ─── Virtuals ─────────────────────────────────────────────────────────────────
 cartSchema.virtual('subtotal').get(function () {
   return this.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
 });

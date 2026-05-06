@@ -3,14 +3,32 @@ const mongoose = require('mongoose');
 // ── Order Item ───────────────────────────────────────────────────────────────
 const orderItemSchema = new mongoose.Schema(
   {
+    itemType: { type: String, enum: ['product', 'combo'], default: 'product' },
+
+    // For product items
     productId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Product',
-      required: true,
     },
-    variantId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    variantId: { type: mongoose.Schema.Types.ObjectId },
+
+    // For combo items — snapshot for immutability
+    comboId: { type: mongoose.Schema.Types.ObjectId, ref: 'Combo' },
+    comboSnapshot: {
+      name: { type: String },
+      price: { type: Number },
+      includedProducts: [
+        {
+          productId: { type: mongoose.Schema.Types.ObjectId },
+          name: { type: String },
+          quantity: { type: Number },
+          _id: false,
+        },
+      ],
+    },
+
     name: { type: String, required: true },
-    size: { type: String, required: true },
+    size: { type: String, default: '' },
     image: { type: String, default: '' },
     price: { type: Number, required: true },
     quantity: { type: Number, required: true, min: 1 },
