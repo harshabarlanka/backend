@@ -8,7 +8,7 @@ const rateLimit = require("express-rate-limit");
 
 const errorHandler = require("./middleware/errorHandler");
 const logger = require("./utils/logger");
-
+const healthRoutes = require("./routes/health.routes");
 // Route imports
 const authRoutes = require("./routes/auth.routes");
 const productRoutes = require("./routes/product.routes");
@@ -54,7 +54,7 @@ app.use("/api/shipping/webhook", express.raw({ type: "application/json" }));
 
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
-
+app.use("/health", healthRoutes);
 // ─── Request Logging ──────────────────────────────────────────────────────────
 if (process.env.NODE_ENV === "development") {
   app.use(morgan("dev"));

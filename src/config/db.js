@@ -1,20 +1,39 @@
-const mongoose = require('mongoose');
-const logger = require('../utils/logger');
+const mongoose = require("mongoose");
+const logger = require("../utils/logger");
+
+let isConnected = false;
 
 const connectDB = async () => {
-  const conn = await mongoose.connect(process.env.MONGO_URI, {
-    // Mongoose 8+ handles these automatically, kept for clarity
-  });
+  try {
+    if (isConnected) {
+      logger.info("Using existing MongoDB connection");
+      return;
+    }
 
-  logger.info(`MongoDB connected: ${conn.connection.host}`);
+    const conn = await mongoose.connect(process.env.MONGO_URI, {
+      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+    });
 
-  mongoose.connection.on('disconnected', () => {
-    logger.warn('MongoDB disconnected. Attempting to reconnect...');
-  });
+    isConnected = conn.connections[0].readyState === 1;
 
-  mongoose.connection.on('reconnected', () => {
-    logger.info('MongoDB reconnected');
-  });
+    logger.info(`MongoDB connected: ${conn.connection.host}`);
+
+    mongoose.connection.on("disconnected", () => {
+      logger.warn("MongoDB disconnected");
+      isConnected = false;
+    });
+
+    mongoose.connection.on("reconnected", () => {
+      logger.info("MongoDB reconnected");
+      isConnected = true;
+    });
+
+  } catch (error) {
+    logger.error("MongoDB connection error:", error);
+    process.exit(1);
+  }
 };
 
 module.exports = connectDB;
