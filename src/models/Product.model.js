@@ -6,7 +6,12 @@ const variantSchema = new mongoose.Schema(
     size: { type: String, required: true, trim: true },
     price: { type: Number, required: true, min: [0, "Price must be positive"] },
     mrp: { type: Number, required: true, min: [0, "MRP must be positive"] },
-    stock: { type: Number, required: true, min: [0, "Stock cannot be negative"], default: 0 },
+    stock: {
+      type: Number,
+      required: true,
+      min: [0, "Stock cannot be negative"],
+      default: 0,
+    },
     sku: { type: String, trim: true },
   },
   { _id: true },
@@ -14,11 +19,23 @@ const variantSchema = new mongoose.Schema(
 
 const reviewSchema = new mongoose.Schema(
   {
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
     orderId: { type: mongoose.Schema.Types.ObjectId, ref: "Order" },
+    verifiedPurchase: {
+      type: Boolean,
+      default: false,
+    },
     name: { type: String, required: true },
     rating: { type: Number, required: true, min: 1, max: 5 },
-    comment: { type: String, trim: true, maxlength: [500, "Review cannot exceed 500 characters"] },
+    comment: {
+      type: String,
+      trim: true,
+      maxlength: [500, "Review cannot exceed 500 characters"],
+    },
   },
   { timestamps: true },
 );
@@ -41,7 +58,14 @@ const productSchema = new mongoose.Schema(
     category: {
       type: String,
       required: [true, "Category is required"],
-      enum: ["veg-pickles", "non-veg-pickles", "sweets", "snacks", "podis", "others"],
+      enum: [
+        "veg-pickles",
+        "non-veg-pickles",
+        "sweets",
+        "snacks",
+        "podis",
+        "others",
+      ],
       default: "others",
     },
     images: {
@@ -55,10 +79,26 @@ const productSchema = new mongoose.Schema(
     tags: [{ type: String, lowercase: true, trim: true }],
 
     // Shipping dimensions (for Shiprocket)
-    length: { type: Number, default: 15, min: [0.1, "Length must be positive"] },
-    breadth: { type: Number, default: 10, min: [0.1, "Breadth must be positive"] },
-    height: { type: Number, default: 10, min: [0.1, "Height must be positive"] },
-    weight: { type: Number, default: 500, min: [1, "Weight must be at least 1g"] },
+    length: {
+      type: Number,
+      default: 15,
+      min: [0.1, "Length must be positive"],
+    },
+    breadth: {
+      type: Number,
+      default: 10,
+      min: [0.1, "Breadth must be positive"],
+    },
+    height: {
+      type: Number,
+      default: 10,
+      min: [0.1, "Height must be positive"],
+    },
+    weight: {
+      type: Number,
+      default: 500,
+      min: [1, "Weight must be at least 1g"],
+    },
 
     reviews: [reviewSchema],
     ratings: {

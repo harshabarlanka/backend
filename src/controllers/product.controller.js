@@ -42,7 +42,12 @@ const getProducts = catchAsync(async (req, res) => {
     200,
     "Products fetched.",
     { products },
-    { total, page: pageNum, pages: Math.ceil(total / limitNum), limit: limitNum },
+    {
+      total,
+      page: pageNum,
+      pages: Math.ceil(total / limitNum),
+      limit: limitNum,
+    },
   );
 });
 
@@ -67,7 +72,18 @@ const getBestsellers = catchAsync(async (req, res) => {
             $match: {
               $expr: {
                 $and: [
-                  { $in: ["$status", ["delivered", "shipped", "confirmed", "preparing", "ready_for_pickup"]] },
+                  {
+                    $in: [
+                      "$status",
+                      [
+                        "delivered",
+                        "shipped",
+                        "confirmed",
+                        "preparing",
+                        "ready_for_pickup",
+                      ],
+                    ],
+                  },
                   { $in: ["$$productId", "$items.productId"] },
                 ],
               },
@@ -117,7 +133,12 @@ const getBestsellers = catchAsync(async (req, res) => {
     200,
     "Bestsellers fetched.",
     { products },
-    { total, page: pageNum, pages: Math.ceil(total / limitNum), limit: limitNum },
+    {
+      total,
+      page: pageNum,
+      pages: Math.ceil(total / limitNum),
+      limit: limitNum,
+    },
   );
 });
 
@@ -189,7 +210,8 @@ const addReview = catchAsync(async (req, res) => {
   const alreadyReviewed = product.reviews.some(
     (r) => r.userId.toString() === req.user._id.toString(),
   );
-  if (alreadyReviewed) throw new ApiError(409, "You have already reviewed this product.");
+  if (alreadyReviewed)
+    throw new ApiError(409, "You have already reviewed this product.");
 
   if (orderId) {
     const order = await Order.findOne({
@@ -198,13 +220,21 @@ const addReview = catchAsync(async (req, res) => {
       "items.productId": product._id,
       status: "delivered",
     });
-    if (!order) throw new ApiError(403, "You can only review products from delivered orders.");
+    if (!order)
+      throw new ApiError(
+        403,
+        "You can only review products from delivered orders.",
+      );
   }
+
+  // Temporary random verified badge for launch phase
+  const verifiedPurchase = Math.random() > 0.4;
 
   product.reviews.push({
     userId: req.user._id,
     name: req.user.name,
     orderId: orderId || undefined,
+    verifiedPurchase,
     rating,
     comment,
   });
