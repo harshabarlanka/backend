@@ -165,6 +165,7 @@ const schemas = {
     rating: Joi.number().integer().min(1).max(5).required(),
     comment: Joi.string().max(500).allow("").optional(),
     orderId: Joi.string().hex().length(24).optional(),
+    variantId: Joi.string().hex().length(24).optional(),
   }),
 
   // User profile

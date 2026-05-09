@@ -25,6 +25,7 @@ const reviewSchema = new mongoose.Schema(
       required: true,
     },
     orderId: { type: mongoose.Schema.Types.ObjectId, ref: "Order" },
+    variantId: { type: mongoose.Schema.Types.ObjectId },
     verifiedPurchase: {
       type: Boolean,
       default: false,

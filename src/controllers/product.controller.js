@@ -202,7 +202,7 @@ const deleteProduct = catchAsync(async (req, res) => {
 // ─── Add Review ───────────────────────────────────────────────────────────────
 
 const addReview = catchAsync(async (req, res) => {
-  const { rating, comment, orderId } = req.body;
+  const { rating, comment, orderId, variantId } = req.body;
   const product = await Product.findById(req.params.id);
 
   if (!product) throw new ApiError(404, "Product not found.");
@@ -213,7 +213,11 @@ const addReview = catchAsync(async (req, res) => {
   if (alreadyReviewed)
     throw new ApiError(409, "You have already reviewed this product.");
 
+  let verifiedPurchase = false;
+  let resolvedOrderId = orderId || undefined;
+
   if (orderId) {
+    // If orderId explicitly provided, validate it is a delivered order containing this product
     const order = await Order.findOne({
       _id: orderId,
       userId: req.user._id,
@@ -225,15 +229,25 @@ const addReview = catchAsync(async (req, res) => {
         403,
         "You can only review products from delivered orders.",
       );
+    verifiedPurchase = true;
+  } else {
+    // Auto-detect: check if user has any delivered order containing this product
+    const deliveredOrder = await Order.findOne({
+      userId: req.user._id,
+      "items.productId": product._id,
+      status: "delivered",
+    });
+    if (deliveredOrder) {
+      verifiedPurchase = true;
+      resolvedOrderId = deliveredOrder._id;
+    }
   }
-
-  // Temporary random verified badge for launch phase
-  const verifiedPurchase = Math.random() > 0.4;
 
   product.reviews.push({
     userId: req.user._id,
     name: req.user.name,
-    orderId: orderId || undefined,
+    orderId: resolvedOrderId,
+    variantId: variantId || undefined,
     verifiedPurchase,
     rating,
     comment,
@@ -243,6 +257,7 @@ const addReview = catchAsync(async (req, res) => {
 
   return sendResponse(res, 201, "Review added successfully.", {
     ratings: product.ratings,
+    verifiedPurchase,
   });
 });
 
