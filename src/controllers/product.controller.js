@@ -276,6 +276,38 @@ const getReviews = catchAsync(async (req, res) => {
   });
 });
 
+// ─── Get My Reviews (all reviews by the logged-in user) ───────────────────────
+// Returns a map: { [productId]: { rating, comment, verifiedPurchase, createdAt } }
+
+const getMyReviews = catchAsync(async (req, res) => {
+  const userId = req.user._id;
+
+  // Find all products where the user has a review
+  const products = await Product.find(
+    { "reviews.userId": userId },
+    { "reviews.$": 1, name: 1 }, // project only the matching review
+  );
+
+  // Build a flat map productId → review data
+  const reviewMap = {};
+  for (const product of products) {
+    const review = product.reviews.find(
+      (r) => r.userId.toString() === userId.toString(),
+    );
+    if (review) {
+      reviewMap[product._id.toString()] = {
+        _id: review._id,
+        rating: review.rating,
+        comment: review.comment || "",
+        verifiedPurchase: review.verifiedPurchase,
+        createdAt: review.createdAt,
+      };
+    }
+  }
+
+  return sendResponse(res, 200, "Your reviews fetched.", { reviewMap });
+});
+
 module.exports = {
   getProducts,
   getBestsellers,
@@ -287,4 +319,5 @@ module.exports = {
   deleteProduct,
   addReview,
   getReviews,
+  getMyReviews,
 };

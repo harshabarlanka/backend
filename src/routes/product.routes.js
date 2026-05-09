@@ -12,6 +12,7 @@ const {
   deleteProduct,
   addReview,
   getReviews,
+  getMyReviews,
 } = require("../controllers/product.controller");
 
 const { protect } = require("../middleware/auth.middleware");
@@ -23,6 +24,7 @@ router.get("/", getProducts);
 router.get("/bestsellers", getBestsellers);
 router.get("/categories", getCategories);
 router.get("/id/:id", getProductById);
+router.get("/my-reviews", protect, getMyReviews); // must be before /:slug
 router.get("/:slug", getProduct);
 router.get("/:id/reviews", getReviews);
 
