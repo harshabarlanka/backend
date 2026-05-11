@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
+// Note: install compression: npm install compression
 const morgan = require("morgan");
 const rateLimit = require("express-rate-limit");
 
@@ -22,6 +23,7 @@ const shippingRoutes = require("./routes/shipping.routes");
 const couponRoutes = require("./routes/coupon.routes"); // Feature 2
 const recommendationsRoutes = require("./routes/recommendations.routes");
 const comboRoutes = require("./routes/combo.routes");
+const seoRoutes = require("./routes/seo.routes");
 
 const { v4: uuidv4 } = require("uuid");
 const app = express();
@@ -54,6 +56,10 @@ app.use("/api/shipping/webhook", express.raw({ type: "application/json" }));
 
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
+// ─── SEO Routes (before rate limiter — crawlers must always access these) ────
+// robots.txt, sitemap.xml, sitemap-products.xml, sitemap-index.xml
+app.use("/", seoRoutes);
+
 app.use("/health", healthRoutes);
 // ─── Request Logging ──────────────────────────────────────────────────────────
 if (process.env.NODE_ENV === "development") {
@@ -109,6 +115,15 @@ app.use("/api/payment/webhook", webhookLimiter);
 // ─── Health Check ─────────────────────────────────────────────────────────────
 app.get("/health", (req, res) => {
   res.status(200).json({ status: "OK", timestamp: new Date().toISOString() });
+});
+
+// ─── Cache-Control headers for public API routes ──────────────────────────────
+// Products list and individual products: 5-minute cache (stale-while-revalidate)
+app.use("/api/products", (req, res, next) => {
+  if (req.method === "GET") {
+    res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=60");
+  }
+  next();
 });
 
 // ─── API Routes ───────────────────────────────────────────────────────────────

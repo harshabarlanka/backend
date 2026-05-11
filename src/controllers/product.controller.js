@@ -1,4 +1,21 @@
 const Product = require("../models/Product.model");
+
+// ─── IndexNow helper — non-blocking URL submission to IndexNow ────────────────
+const pingIndexNow = (slug) => {
+  const base = (process.env.CLIENT_URL || "https://naidugariruchulu.vercel.app").replace(/\/$/, "");
+  const key  = process.env.INDEXNOW_KEY;
+  if (!key || key === "YOUR_INDEXNOW_KEY_HERE" || !slug) return;
+  const url  = `${base}/product/${slug}`;
+  fetch("https://api.indexnow.org/indexnow", {
+    method: "POST",
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+    body: JSON.stringify({
+      host: new URL(base).hostname,
+      key,
+      urlList: [url],
+    }),
+  }).catch(() => {}); // fire-and-forget, never block the response
+};
 const Order = require("../models/Order.model");
 const ApiError = require("../utils/ApiError");
 const { sendResponse } = require("../utils/ApiResponse");
@@ -174,6 +191,7 @@ const getCategories = catchAsync(async (req, res) => {
 
 const createProduct = catchAsync(async (req, res) => {
   const product = await Product.create(req.body);
+  pingIndexNow(product.slug); // notify search engines
   return sendResponse(res, 201, "Product created successfully.", { product });
 });
 
@@ -186,6 +204,7 @@ const updateProduct = catchAsync(async (req, res) => {
     { new: true, runValidators: true },
   );
   if (!product) throw new ApiError(404, "Product not found.");
+  pingIndexNow(product.slug); // notify search engines
   return sendResponse(res, 200, "Product updated successfully.", { product });
 });
 
