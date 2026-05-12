@@ -9,26 +9,35 @@ const router = express.Router();
 const Product = require("../models/Product.model");
 const catchAsync = require("../utils/catchAsync");
 
-const SITE_URL = process.env.CLIENT_URL || "https://naidugariruchulu.com";
+const SITE_URL =
+  process.env.CLIENT_URL || "https://naidugariruchulu.vercel.app";
 // Strip trailing slash for clean URL construction
 const BASE = SITE_URL.replace(/\/$/, "");
 
 // ─── Static pages with their SEO priority & changefreq ────────────────────────
 const STATIC_PAGES = [
-  { path: "/",                   priority: "1.0", changefreq: "daily" },
-  { path: "/products",           priority: "0.9", changefreq: "daily" },
-  { path: "/combos",             priority: "0.8", changefreq: "weekly" },
-  { path: "/products?category=veg-pickles",     priority: "0.8", changefreq: "weekly" },
-  { path: "/products?category=non-veg-pickles", priority: "0.8", changefreq: "weekly" },
-  { path: "/products?category=sweets",          priority: "0.7", changefreq: "weekly" },
-  { path: "/products?category=snacks",          priority: "0.7", changefreq: "weekly" },
-  { path: "/products?category=podis",           priority: "0.7", changefreq: "weekly" },
-  { path: "/faq",                priority: "0.6", changefreq: "monthly" },
-  { path: "/contact",            priority: "0.5", changefreq: "monthly" },
-  { path: "/shipping-policy",    priority: "0.4", changefreq: "monthly" },
-  { path: "/return-policy",      priority: "0.4", changefreq: "monthly" },
-  { path: "/privacy-policy",     priority: "0.3", changefreq: "yearly" },
-  { path: "/terms",              priority: "0.3", changefreq: "yearly" },
+  { path: "/", priority: "1.0", changefreq: "daily" },
+  { path: "/products", priority: "0.9", changefreq: "daily" },
+  { path: "/combos", priority: "0.8", changefreq: "weekly" },
+  {
+    path: "/products?category=veg-pickles",
+    priority: "0.8",
+    changefreq: "weekly",
+  },
+  {
+    path: "/products?category=non-veg-pickles",
+    priority: "0.8",
+    changefreq: "weekly",
+  },
+  { path: "/products?category=sweets", priority: "0.7", changefreq: "weekly" },
+  { path: "/products?category=snacks", priority: "0.7", changefreq: "weekly" },
+  { path: "/products?category=podis", priority: "0.7", changefreq: "weekly" },
+  { path: "/faq", priority: "0.6", changefreq: "monthly" },
+  { path: "/contact", priority: "0.5", changefreq: "monthly" },
+  { path: "/shipping-policy", priority: "0.4", changefreq: "monthly" },
+  { path: "/return-policy", priority: "0.4", changefreq: "monthly" },
+  { path: "/privacy-policy", priority: "0.3", changefreq: "yearly" },
+  { path: "/terms", priority: "0.3", changefreq: "yearly" },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -43,7 +52,9 @@ function xmlEscape(str) {
 }
 
 function toISODate(date) {
-  return date ? new Date(date).toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
+  return date
+    ? new Date(date).toISOString().split("T")[0]
+    : new Date().toISOString().split("T")[0];
 }
 
 function urlEntry(loc, lastmod, changefreq, priority) {
@@ -105,83 +116,89 @@ router.get("/robots.txt", (req, res) => {
 });
 
 // ─── GET /sitemap.xml ─────────────────────────────────────────────────────────
-router.get("/sitemap.xml", catchAsync(async (req, res) => {
-  const today = toISODate(new Date());
+router.get(
+  "/sitemap.xml",
+  catchAsync(async (req, res) => {
+    const today = toISODate(new Date());
 
-  // Fetch all active products (only slug + updatedAt needed)
-  const products = await Product.find({ isActive: true })
-    .select("slug updatedAt")
-    .lean();
+    // Fetch all active products (only slug + updatedAt needed)
+    const products = await Product.find({ isActive: true })
+      .select("slug updatedAt")
+      .lean();
 
-  // Static page entries
-  const staticEntries = STATIC_PAGES.map(({ path, priority, changefreq }) =>
-    urlEntry(`${BASE}${path}`, today, changefreq, priority)
-  );
-
-  // Product entries
-  const productEntries = products
-    .filter((p) => p.slug)
-    .map((p) =>
-      urlEntry(
-        `${BASE}/product/${p.slug}`,
-        toISODate(p.updatedAt),
-        "weekly",
-        "0.9"
-      )
+    // Static page entries
+    const staticEntries = STATIC_PAGES.map(({ path, priority, changefreq }) =>
+      urlEntry(`${BASE}${path}`, today, changefreq, priority),
     );
 
-  const xml = [
-    `<?xml version="1.0" encoding="UTF-8"?>`,
-    `<urlset`,
-    `  xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"`,
-    `  xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">`,
-    "",
-    "  <!-- ═══ STATIC PAGES ═══ -->",
-    ...staticEntries,
-    "",
-    "  <!-- ═══ PRODUCT PAGES ═══ -->",
-    ...productEntries,
-    "",
-    "</urlset>",
-  ].join("\n");
+    // Product entries
+    const productEntries = products
+      .filter((p) => p.slug)
+      .map((p) =>
+        urlEntry(
+          `${BASE}/product/${p.slug}`,
+          toISODate(p.updatedAt),
+          "weekly",
+          "0.9",
+        ),
+      );
 
-  res.setHeader("Content-Type", "application/xml; charset=utf-8");
-  res.setHeader("Cache-Control", "public, max-age=3600"); // 1 hour
-  res.send(xml);
-}));
+    const xml = [
+      `<?xml version="1.0" encoding="UTF-8"?>`,
+      `<urlset`,
+      `  xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"`,
+      `  xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">`,
+      "",
+      "  <!-- ═══ STATIC PAGES ═══ -->",
+      ...staticEntries,
+      "",
+      "  <!-- ═══ PRODUCT PAGES ═══ -->",
+      ...productEntries,
+      "",
+      "</urlset>",
+    ].join("\n");
+
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600"); // 1 hour
+    res.send(xml);
+  }),
+);
 
 // ─── GET /sitemap-products.xml — product-only sitemap ─────────────────────────
-router.get("/sitemap-products.xml", catchAsync(async (req, res) => {
-  const products = await Product.find({ isActive: true })
-    .select("slug updatedAt name images category")
-    .lean();
+router.get(
+  "/sitemap-products.xml",
+  catchAsync(async (req, res) => {
+    const products = await Product.find({ isActive: true })
+      .select("slug updatedAt name images category")
+      .lean();
 
-  const productEntries = products
-    .filter((p) => p.slug)
-    .map((p) => {
-      const imageTag = p.images?.[0]
-        ? `\n    <image:image>\n      <image:loc>${xmlEscape(p.images[0])}</image:loc>\n      <image:title>${xmlEscape(p.name)}</image:title>\n    </image:image>`
-        : "";
-      return `  <url>
+    const productEntries = products
+      .filter((p) => p.slug)
+      .map((p) => {
+        const imageTag = p.images?.[0]
+          ? `\n    <image:image>\n      <image:loc>${xmlEscape(p.images[0])}</image:loc>\n      <image:title>${xmlEscape(p.name)}</image:title>\n    </image:image>`
+          : "";
+        return `  <url>
     <loc>${xmlEscape(`${BASE}/product/${p.slug}`)}</loc>
     <lastmod>${toISODate(p.updatedAt)}</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>${imageTag}
   </url>`;
-    });
+      });
 
-  const xml = [
-    `<?xml version="1.0" encoding="UTF-8"?>`,
-    `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"`,
-    `  xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">`,
-    ...productEntries,
-    `</urlset>`,
-  ].join("\n");
+    const xml = [
+      `<?xml version="1.0" encoding="UTF-8"?>`,
+      `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"`,
+      `  xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">`,
+      ...productEntries,
+      `</urlset>`,
+    ].join("\n");
 
-  res.setHeader("Content-Type", "application/xml; charset=utf-8");
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.send(xml);
-}));
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.send(xml);
+  }),
+);
 
 // ─── GET /sitemap-index.xml — sitemap index ────────────────────────────────────
 router.get("/sitemap-index.xml", (req, res) => {
@@ -212,26 +229,31 @@ router.get(`/${INDEXNOW_KEY}.txt`, (req, res) => {
 });
 
 // POST /api/seo/indexnow — submit URLs to IndexNow on product create/update
-router.post("/indexnow", catchAsync(async (req, res) => {
-  const { urls } = req.body;
-  if (!urls || !Array.isArray(urls)) {
-    return res.status(400).json({ success: false, message: "urls array required" });
-  }
+router.post(
+  "/indexnow",
+  catchAsync(async (req, res) => {
+    const { urls } = req.body;
+    if (!urls || !Array.isArray(urls)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "urls array required" });
+    }
 
-  const payload = {
-    host: new URL(BASE).hostname,
-    key: INDEXNOW_KEY,
-    urlList: urls.map((u) => (u.startsWith("http") ? u : `${BASE}${u}`)),
-  };
+    const payload = {
+      host: new URL(BASE).hostname,
+      key: INDEXNOW_KEY,
+      urlList: urls.map((u) => (u.startsWith("http") ? u : `${BASE}${u}`)),
+    };
 
-  // Fire and forget — non-blocking
-  fetch("https://api.indexnow.org/indexnow", {
-    method: "POST",
-    headers: { "Content-Type": "application/json; charset=utf-8" },
-    body: JSON.stringify(payload),
-  }).catch(() => {}); // silently ignore errors
+    // Fire and forget — non-blocking
+    fetch("https://api.indexnow.org/indexnow", {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify(payload),
+    }).catch(() => {}); // silently ignore errors
 
-  res.json({ success: true, submitted: payload.urlList.length });
-}));
+    res.json({ success: true, submitted: payload.urlList.length });
+  }),
+);
 
 module.exports = router;
