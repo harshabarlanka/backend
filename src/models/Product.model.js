@@ -118,10 +118,16 @@ const productSchema = new mongoose.Schema(
 );
 
 // ─── Indexes ──────────────────────────────────────────────────────────────────
-productSchema.index({ category: 1, isActive: 1 });
-productSchema.index({ tags: 1 });
+// Compound index for category + isActive filter (most common query)
+productSchema.index({ isActive: 1, category: 1, createdAt: -1 });
+// Slug lookup (product detail page)
+productSchema.index({ slug: 1, isActive: 1 });
+// Bestseller sort
+productSchema.index({ isActive: 1, "ratings.average": -1 });
+// Tag filter (bestsellers page)
+productSchema.index({ tags: 1, isActive: 1 });
+// Full-text search
 productSchema.index({ name: "text", description: "text", tags: "text" });
-productSchema.index({ "ratings.average": -1 });
 
 // ─── Virtual: min price ───────────────────────────────────────────────────────
 productSchema.virtual("minPrice").get(function () {

@@ -11,9 +11,17 @@ const connectDB = async () => {
     }
 
     const conn = await mongoose.connect(process.env.MONGO_URI, {
+      // Connection pool: 10 is fine for Render hobby; increase for production scaling
       maxPoolSize: 10,
+      minPoolSize: 2,             // Keep 2 idle connections ready (reduces connection latency)
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
+      // Heartbeat: detect stale connections faster
+      heartbeatFrequencyMS: 10000,
+      // Write concern: journal for durability without blocking reads
+      w: "majority",
+      // Compress wire protocol traffic
+      compressors: ["snappy", "zlib"],
     });
 
     isConnected = conn.connections[0].readyState === 1;

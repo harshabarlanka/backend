@@ -33,6 +33,14 @@ const getProducts = catchAsync(async (req, res) => {
   const match = { isActive: true };
   if (category) match.category = category;
 
+  // Projection: exclude reviews & description from list — only needed on detail page
+  const LIST_PROJECTION = {
+    $project: {
+      name: 1, slug: 1, category: 1, images: { $slice: ["$images", 1] },
+      variants: 1, tags: 1, ratings: 1, isActive: 1, minPrice: 1,
+    },
+  };
+
   const pipeline = [
     { $match: match },
     { $addFields: { minPrice: { $min: "$variants.price" } } },
@@ -47,6 +55,7 @@ const getProducts = catchAsync(async (req, res) => {
   };
 
   pipeline.push({ $sort: SORT_MAP[sort] || { createdAt: -1 } });
+  pipeline.push(LIST_PROJECTION);
   pipeline.push({ $skip: skip }, { $limit: limitNum });
 
   const [products, total] = await Promise.all([
@@ -71,11 +80,24 @@ const getProducts = catchAsync(async (req, res) => {
 // ─── Get Bestsellers ──────────────────────────────────────────────────────────
 // Priority: totalOrders DESC → averageRating DESC
 
+// Simple in-memory cache for the expensive bestsellers $lookup aggregation
+const bestsellersCache = new Map();
+const BESTSELLERS_TTL = 5 * 60 * 1000; // 5 minutes
+
 const getBestsellers = catchAsync(async (req, res) => {
   const { limit = 4, page = 1 } = req.query;
   const limitNum = Math.min(100, Math.max(1, Number(limit)));
   const pageNum = Math.max(1, Number(page));
   const skip = (pageNum - 1) * limitNum;
+
+  // Cache key: limit+page combo
+  const cacheKey = `${limitNum}:${pageNum}`;
+  const cached = bestsellersCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < BESTSELLERS_TTL) {
+    res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=60");
+    res.setHeader("X-Cache", "HIT");
+    return sendResponse(res, 200, "Bestsellers fetched.", { products: cached.products }, cached.meta);
+  }
 
   // Single aggregation: join order counts into products
   const pipeline = [
@@ -145,18 +167,19 @@ const getBestsellers = catchAsync(async (req, res) => {
 
   const total = countResult[0]?.total || 0;
 
-  return sendResponse(
-    res,
-    200,
-    "Bestsellers fetched.",
-    { products },
-    {
-      total,
-      page: pageNum,
-      pages: Math.ceil(total / limitNum),
-      limit: limitNum,
-    },
-  );
+  const metaResult = {
+    total,
+    page: pageNum,
+    pages: Math.ceil(total / limitNum),
+    limit: limitNum,
+  };
+
+  // Store in cache
+  bestsellersCache.set(cacheKey, { products, meta: metaResult, ts: Date.now() });
+
+  res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=60");
+  res.setHeader("X-Cache", "MISS");
+  return sendResponse(res, 200, "Bestsellers fetched.", { products }, metaResult);
 });
 
 // ─── Get Single Product by Slug ───────────────────────────────────────────────
@@ -165,7 +188,7 @@ const getProduct = catchAsync(async (req, res) => {
   const product = await Product.findOne({
     slug: req.params.slug,
     isActive: true,
-  }).populate("reviews.userId", "name");
+  }).lean();
 
   if (!product) throw new ApiError(404, "Product not found.");
 
@@ -175,7 +198,7 @@ const getProduct = catchAsync(async (req, res) => {
 // ─── Get Product by ID ────────────────────────────────────────────────────────
 
 const getProductById = catchAsync(async (req, res) => {
-  const product = await Product.findById(req.params.id);
+  const product = await Product.findById(req.params.id).lean();
   if (!product) throw new ApiError(404, "Product not found.");
   return sendResponse(res, 200, "Product fetched.", { product });
 });
@@ -183,6 +206,7 @@ const getProductById = catchAsync(async (req, res) => {
 // ─── Categories ───────────────────────────────────────────────────────────────
 
 const getCategories = catchAsync(async (req, res) => {
+  res.setHeader("Cache-Control", "public, max-age=3600, stale-while-revalidate=600");
   const categories = await Product.distinct("category", { isActive: true });
   return sendResponse(res, 200, "Categories fetched.", { categories });
 });

@@ -12,6 +12,7 @@ const logger = require("./utils/logger");
 const mongoose = require("mongoose");
 require("./crons/abandonedOrders.cron");
 require("./crons/awbRetry.cron");
+require("./crons/keepAlive.cron");
 
 const PORT = process.env.PORT || 5000;
 
