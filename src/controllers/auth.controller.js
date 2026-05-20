@@ -1,9 +1,17 @@
-const User = require('../models/User.model');
-const { createTokenPair, verifyRefreshToken, generatePasswordResetToken, hashToken } = require('../services/token.service');
-const { sendWelcomeEmail, sendPasswordResetEmail } = require('../services/email.service');
-const ApiError = require('../utils/ApiError');
-const { sendResponse } = require('../utils/ApiResponse');
-const catchAsync = require('../utils/catchAsync');
+const User = require("../models/User.model");
+const {
+  createTokenPair,
+  verifyRefreshToken,
+  generatePasswordResetToken,
+  hashToken,
+} = require("../services/token.service");
+const {
+  sendWelcomeEmail,
+  sendPasswordResetEmail,
+} = require("../services/email.service");
+const ApiError = require("../utils/ApiError");
+const { sendResponse } = require("../utils/ApiResponse");
+const catchAsync = require("../utils/catchAsync");
 
 // ─── Register ─────────────────────────────────────────────────────────────────
 
@@ -12,7 +20,7 @@ const register = catchAsync(async (req, res) => {
 
   const existingUser = await User.findOne({ email });
   if (existingUser) {
-    throw new ApiError(409, 'An account with this email already exists.');
+    throw new ApiError(409, "An account with this email already exists.");
   }
 
   const user = await User.create({
@@ -31,7 +39,7 @@ const register = catchAsync(async (req, res) => {
   // Fire-and-forget welcome email
   sendWelcomeEmail({ email: user.email, name: user.name });
 
-  return sendResponse(res, 201, 'Account created successfully.', {
+  return sendResponse(res, 201, "Account created successfully.", {
     user: user.toPublicJSON(),
     accessToken,
     refreshToken,
@@ -44,14 +52,19 @@ const login = catchAsync(async (req, res) => {
   const { email, password } = req.body;
 
   // Explicitly select passwordHash (excluded by default)
-  const user = await User.findOne({ email }).select('+passwordHash +refreshToken');
+  const user = await User.findOne({ email }).select(
+    "+passwordHash +refreshToken",
+  );
 
   if (!user || !(await user.comparePassword(password))) {
-    throw new ApiError(401, 'Incorrect email or password.');
+    throw new ApiError(401, "Incorrect email or password.");
   }
 
   if (!user.isActive) {
-    throw new ApiError(403, 'Your account has been deactivated. Please contact support.');
+    throw new ApiError(
+      403,
+      "Your account has been deactivated. Please contact support.",
+    );
   }
 
   const { accessToken, refreshToken } = createTokenPair(user._id, user.role);
@@ -59,38 +72,53 @@ const login = catchAsync(async (req, res) => {
   user.refreshToken = refreshToken;
   await user.save({ validateBeforeSave: false });
 
-  return sendResponse(res, 200, 'Logged in successfully.', {
+  res.cookie("refreshToken", refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
+  return sendResponse(res, 200, "Logged in successfully.", {
     user: user.toPublicJSON(),
     accessToken,
-    refreshToken,
   });
 });
 
 // ─── Refresh Access Token ─────────────────────────────────────────────────────
 
 const refreshToken = catchAsync(async (req, res) => {
-  const { refreshToken: token } = req.body;
+  const token = req.cookies.refreshToken;
 
   if (!token) {
-    throw new ApiError(400, 'Refresh token is required.');
+    throw new ApiError(400, "Refresh token is required.");
   }
 
   const decoded = verifyRefreshToken(token);
 
-  const user = await User.findById(decoded.id).select('+refreshToken');
+  const user = await User.findById(decoded.id).select("+refreshToken");
   if (!user || user.refreshToken !== token) {
-    throw new ApiError(401, 'Invalid refresh token. Please log in again.');
+    throw new ApiError(401, "Invalid refresh token. Please log in again.");
   }
 
-  const { accessToken, refreshToken: newRefreshToken } = createTokenPair(user._id, user.role);
+  const { accessToken, refreshToken: newRefreshToken } = createTokenPair(
+    user._id,
+    user.role,
+  );
 
   // Rotate refresh token
   user.refreshToken = newRefreshToken;
   await user.save({ validateBeforeSave: false });
 
-  return sendResponse(res, 200, 'Token refreshed.', {
+  res.cookie("refreshToken", newRefreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
+  return sendResponse(res, 200, "Token refreshed.", {
     accessToken,
-    refreshToken: newRefreshToken,
   });
 });
 
@@ -100,14 +128,16 @@ const logout = catchAsync(async (req, res) => {
   // Invalidate refresh token in DB
   await User.findByIdAndUpdate(req.user._id, { refreshToken: null });
 
-  return sendResponse(res, 200, 'Logged out successfully.');
+  res.clearCookie("refreshToken");
+
+  return sendResponse(res, 200, "Logged out successfully.");
 });
 
 // ─── Get Current User ─────────────────────────────────────────────────────────
 
 const getMe = catchAsync(async (req, res) => {
   const user = await User.findById(req.user._id);
-  return sendResponse(res, 200, 'User fetched.', { user: user.toPublicJSON() });
+  return sendResponse(res, 200, "User fetched.", { user: user.toPublicJSON() });
 });
 
 // ─── Forgot Password ──────────────────────────────────────────────────────────
@@ -119,7 +149,11 @@ const forgotPassword = catchAsync(async (req, res) => {
 
   // Always return 200 to avoid user enumeration
   if (!user) {
-    return sendResponse(res, 200, 'If an account with this email exists, a reset link has been sent.');
+    return sendResponse(
+      res,
+      200,
+      "If an account with this email exists, a reset link has been sent.",
+    );
   }
 
   const { rawToken, hashedToken, expiresAt } = generatePasswordResetToken();
@@ -128,9 +162,17 @@ const forgotPassword = catchAsync(async (req, res) => {
   user.passwordResetExpires = expiresAt;
   await user.save({ validateBeforeSave: false });
 
-  sendPasswordResetEmail({ email: user.email, name: user.name, resetToken: rawToken });
+  sendPasswordResetEmail({
+    email: user.email,
+    name: user.name,
+    resetToken: rawToken,
+  });
 
-  return sendResponse(res, 200, 'If an account with this email exists, a reset link has been sent.');
+  return sendResponse(
+    res,
+    200,
+    "If an account with this email exists, a reset link has been sent.",
+  );
 });
 
 // ─── Reset Password ───────────────────────────────────────────────────────────
@@ -143,10 +185,10 @@ const resetPassword = catchAsync(async (req, res) => {
   const user = await User.findOne({
     passwordResetToken: hashedToken,
     passwordResetExpires: { $gt: Date.now() },
-  }).select('+passwordHash');
+  }).select("+passwordHash");
 
   if (!user) {
-    throw new ApiError(400, 'Reset token is invalid or has expired.');
+    throw new ApiError(400, "Reset token is invalid or has expired.");
   }
 
   user.passwordHash = password; // pre-save hook will re-hash
@@ -155,7 +197,11 @@ const resetPassword = catchAsync(async (req, res) => {
   user.refreshToken = undefined; // force re-login on all devices
   await user.save();
 
-  return sendResponse(res, 200, 'Password reset successfully. Please log in with your new password.');
+  return sendResponse(
+    res,
+    200,
+    "Password reset successfully. Please log in with your new password.",
+  );
 });
 
 module.exports = {

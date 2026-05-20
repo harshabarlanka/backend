@@ -1,21 +1,46 @@
-# Node modules
-node_modules/
+# ============================================================
+# pickle-backend/.gitignore
+# ============================================================
+# This gitignore is your last line of defense against credential leaks.
+# NEVER override these with git add -f
 
-# Env files
+# ── Environment / Secrets — NEVER commit these ───────────────
 .env
+.env.*
+.env.local
+.env.production
+.env.development
+.env.staging
+!.env.example        # .env.example IS committed (it has no real values)
 
-# Logs
-logs
-*.log
+# ── Node modules ─────────────────────────────────────────────
+node_modules/
 npm-debug.log*
+yarn-error.log
 
-# OS files
-.DS_Store
-Thumbs.db
+# ── Logs — ephemeral, never commit ───────────────────────────
+logs/
+*.log
 
-# VS Code
-.vscode/
-
-# Build files
+# ── Build / dist output ───────────────────────────────────────
 dist/
 build/
+
+# ── OS files ─────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ── IDE / Editor ─────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Test coverage ─────────────────────────────────────────────
+coverage/
+.nyc_output/
+
+# ── Temporary uploads ─────────────────────────────────────────
+uploads/
+tmp/

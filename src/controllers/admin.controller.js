@@ -658,7 +658,13 @@ const getAnalytics = catchAsync(async (req, res) => {
     }, {}),
   });
 });
+const getAllProducts = catchAsync(async (req, res) => {
+  const products = await Product.find().sort({ createdAt: -1 });
 
+  return sendResponse(res, 200, 'Products fetched.', {
+    products,
+  });
+});
 module.exports = {
   getDashboard,
   getAllOrders,
@@ -673,4 +679,5 @@ module.exports = {
   getAllUsers,
   toggleUserStatus,
   getAnalytics,
+  getAllProducts,
 };
