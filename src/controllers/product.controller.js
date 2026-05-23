@@ -2,10 +2,12 @@ const Product = require("../models/Product.model");
 
 // ─── IndexNow helper — non-blocking URL submission to IndexNow ────────────────
 const pingIndexNow = (slug) => {
-  const base = (process.env.CLIENT_URL || "https://naidugariruchulu.vercel.app").replace(/\/$/, "");
-  const key  = process.env.INDEXNOW_KEY;
+  const base = (
+    process.env.CLIENT_URL || "https://naidugariruchulu.vercel.app"
+  ).replace(/\/$/, "");
+  const key = process.env.INDEXNOW_KEY;
   if (!key || key === "YOUR_INDEXNOW_KEY_HERE" || !slug) return;
-  const url  = `${base}/product/${slug}`;
+  const url = `${base}/product/${slug}`;
   fetch("https://api.indexnow.org/indexnow", {
     method: "POST",
     headers: { "Content-Type": "application/json; charset=utf-8" },
@@ -36,8 +38,15 @@ const getProducts = catchAsync(async (req, res) => {
   // Projection: exclude reviews & description from list — only needed on detail page
   const LIST_PROJECTION = {
     $project: {
-      name: 1, slug: 1, category: 1, images: { $slice: ["$images", 1] },
-      variants: 1, tags: 1, ratings: 1, isActive: 1, minPrice: 1,
+      name: 1,
+      slug: 1,
+      category: 1,
+      images: { $slice: ["$images", 1] },
+      variants: 1,
+      tags: 1,
+      ratings: 1,
+      isActive: 1,
+      minPrice: 1,
     },
   };
 
@@ -94,9 +103,18 @@ const getBestsellers = catchAsync(async (req, res) => {
   const cacheKey = `${limitNum}:${pageNum}`;
   const cached = bestsellersCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < BESTSELLERS_TTL) {
-    res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=60");
+    res.setHeader(
+      "Cache-Control",
+      "public, max-age=300, stale-while-revalidate=60",
+    );
     res.setHeader("X-Cache", "HIT");
-    return sendResponse(res, 200, "Bestsellers fetched.", { products: cached.products }, cached.meta);
+    return sendResponse(
+      res,
+      200,
+      "Bestsellers fetched.",
+      { products: cached.products },
+      cached.meta,
+    );
   }
 
   // Single aggregation: join order counts into products
@@ -175,11 +193,24 @@ const getBestsellers = catchAsync(async (req, res) => {
   };
 
   // Store in cache
-  bestsellersCache.set(cacheKey, { products, meta: metaResult, ts: Date.now() });
+  bestsellersCache.set(cacheKey, {
+    products,
+    meta: metaResult,
+    ts: Date.now(),
+  });
 
-  res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=60");
+  res.setHeader(
+    "Cache-Control",
+    "public, max-age=300, stale-while-revalidate=60",
+  );
   res.setHeader("X-Cache", "MISS");
-  return sendResponse(res, 200, "Bestsellers fetched.", { products }, metaResult);
+  return sendResponse(
+    res,
+    200,
+    "Bestsellers fetched.",
+    { products },
+    metaResult,
+  );
 });
 
 // ─── Get Single Product by Slug ───────────────────────────────────────────────
@@ -206,17 +237,30 @@ const getProductById = catchAsync(async (req, res) => {
 // ─── Categories ───────────────────────────────────────────────────────────────
 
 const getCategories = catchAsync(async (req, res) => {
-  res.setHeader("Cache-Control", "public, max-age=3600, stale-while-revalidate=600");
+  res.setHeader(
+    "Cache-Control",
+    "public, max-age=3600, stale-while-revalidate=600",
+  );
   const categories = await Product.distinct("category", { isActive: true });
   return sendResponse(res, 200, "Categories fetched.", { categories });
 });
-
 // ─── Create Product ───────────────────────────────────────────────────────────
-
 const createProduct = catchAsync(async (req, res) => {
-  const product = await Product.create(req.body);
-  pingIndexNow(product.slug); // notify search engines
-  return sendResponse(res, 201, "Product created successfully.", { product });
+  try {
+    console.log(req.body);
+
+    const product = await Product.create(req.body);
+
+    pingIndexNow(product.slug);
+
+    return sendResponse(res, 201, "Product created successfully.", {
+      product,
+    });
+  } catch (err) {
+    console.log(err);
+
+    throw err;
+  }
 });
 
 // ─── Update Product ───────────────────────────────────────────────────────────

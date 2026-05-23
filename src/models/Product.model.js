@@ -107,6 +107,13 @@ const productSchema = new mongoose.Schema(
       count: { type: Number, default: 0 },
     },
     isActive: { type: Boolean, default: true },
+
+    // FIX: isFeatured was missing from the schema entirely.
+    // The frontend sends this field, the Joi schema allows it, but Mongoose
+    // was silently dropping it on every create/update because it wasn't
+    // defined here. Featured products are used for homepage highlights.
+    isFeatured: { type: Boolean, default: false },
+
     hsn: { type: String, default: "2001" },
     taxRate: { type: Number, default: 0 },
   },
@@ -126,6 +133,8 @@ productSchema.index({ slug: 1, isActive: 1 });
 productSchema.index({ isActive: 1, "ratings.average": -1 });
 // Tag filter (bestsellers page)
 productSchema.index({ tags: 1, isActive: 1 });
+// Featured products (homepage)
+productSchema.index({ isFeatured: 1, isActive: 1 });
 // Full-text search
 productSchema.index({ name: "text", description: "text", tags: "text" });
 
