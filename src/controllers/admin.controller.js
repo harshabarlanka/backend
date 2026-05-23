@@ -51,14 +51,16 @@ const getDashboard = catchAsync(async (req, res) => {
       status: { $in: ['confirmed', 'preparing', 'ready_for_pickup'] },
     }),
     User.countDocuments({ role: 'user' }),
+    // FIX: was ['captured', 'captured'] — duplicate value, copy-paste error.
+    // Using a plain equality match is cleaner and equally correct.
     Payment.aggregate([
-      { $match: { status: { $in: ['captured', 'captured'] } } },
+      { $match: { status: 'captured' } },
       { $group: { _id: null, total: { $sum: '$amount' } } },
     ]),
     Payment.aggregate([
       {
         $match: {
-          status: { $in: ['captured', 'captured'] },
+          status: 'captured',
           createdAt: { $gte: startOfMonth },
         },
       },

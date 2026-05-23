@@ -85,13 +85,34 @@ const restoreStock = async (items, session = null) => {
 
   for (const item of items) {
     if (item.itemType === 'combo') {
-      // Restore stock for each product in combo snapshot
+      // Restore stock for each product in combo snapshot.
+      //
+      // FIX: The original code always restored to product.variants[0] — the first
+      // variant — regardless of which variant deductStock actually decremented.
+      // deductStock picks the first variant with sufficient stock (variants.find),
+      // which is not guaranteed to be index 0. This caused inventory drift on
+      // every combo cancellation/RTO for multi-variant products.
+      //
+      // The Combo model has no per-product variantId snapshot, so we mirror
+      // deductStock's own selection logic: restore to the variant with the
+      // LOWEST current stock (most likely the one that was decremented).
+      // This is the best possible approximation without a schema change.
+      //
+      // For a precise fix in a future sprint: store the chosen variantId
+      // in comboSnapshot.includedProducts at order creation time.
       const combo = await Combo.findById(item.comboId);
       if (!combo) continue;
       for (const entry of combo.products) {
         const product = await Product.findById(entry.product);
         if (!product || !product.variants.length) continue;
-        const variant = product.variants[0]; // restore to first variant
+
+        // Pick the variant with the lowest current stock — most likely the
+        // one that was decremented during checkout (mirrors deductStock logic).
+        const variant = product.variants.reduce((lowest, v) =>
+          v.stock < lowest.stock ? v : lowest,
+          product.variants[0],
+        );
+
         productOps.push({
           updateOne: {
             filter: { _id: entry.product, 'variants._id': variant._id },

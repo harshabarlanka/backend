@@ -59,24 +59,10 @@ const schemas = {
   }),
 
   // Product
-  //
-  // FIX 1: Added `length`, `breadth`, `height` fields — these are present in
-  // the Product model and sent by the frontend's toPayload(), but were missing
-  // from both schemas. Because Joi uses stripUnknown:true, they were silently
-  // dropped, but their absence from the schema caused the req.body validation
-  // to strip fields needed by the Product model's Shiprocket dimension logic.
-  //
-  // FIX 2: Variant sub-schema now allows an optional `_id` string field.
-  // The frontend generates a local `crypto.randomUUID()` _id for each variant
-  // (used as the React list key). Joi was receiving this field in the POST body,
-  // and while stripUnknown:true strips it silently at the top level, Joi does
-  // NOT apply stripUnknown recursively to nested objects by default — causing
-  // "variant._id is not allowed" validation errors on some Joi versions, or
-  // inconsistent 422s. Explicitly allowing it as optional is the safe fix.
   createProduct: Joi.object({
     name: Joi.string().trim().min(2).max(120).required(),
-    description: Joi.string().min(10).max(2000).required(),
-    ingredients: Joi.string().max(500).optional().allow(""),
+    description: Joi.string().min(3).max(2000).required(),
+    ingredients: Joi.string().max(500).optional(),
     category: Joi.string()
       .valid(
         "veg-pickles",
@@ -91,32 +77,26 @@ const schemas = {
     variants: Joi.array()
       .items(
         Joi.object({
-          // Allow the frontend's local UUID key — stripped by Mongoose on save
-          _id: Joi.string().optional(),
           size: Joi.string().required(),
           price: Joi.number().positive().required(),
           mrp: Joi.number().positive().required(),
           stock: Joi.number().integer().min(0).required(),
-          sku: Joi.string().optional().allow(""),
+          sku: Joi.string().optional(),
         }),
       )
       .min(1)
       .required(),
     tags: Joi.array().items(Joi.string().lowercase().trim()).optional(),
-    // Shipping dimensions — present in Product model, sent by frontend
     weight: Joi.number().positive().optional(),
-    length: Joi.number().positive().optional(),
-    breadth: Joi.number().positive().optional(),
-    height: Joi.number().positive().optional(),
     isFeatured: Joi.boolean().optional(),
     taxRate: Joi.number().min(0).max(100).optional(),
-    hsn: Joi.string().optional().allow(""),
+    hsn: Joi.string().optional(),
   }),
 
   updateProduct: Joi.object({
     name: Joi.string().trim().min(2).max(120).optional(),
-    description: Joi.string().min(10).max(2000).optional(),
-    ingredients: Joi.string().max(500).optional().allow(""),
+    description: Joi.string().min(3).max(2000).optional(),
+    ingredients: Joi.string().max(500).optional(),
     category: Joi.string()
       .valid(
         "veg-pickles",
@@ -131,27 +111,21 @@ const schemas = {
     variants: Joi.array()
       .items(
         Joi.object({
-          // Allow existing MongoDB _id strings from populated product data
-          _id: Joi.string().optional(),
           size: Joi.string().required(),
           price: Joi.number().positive().required(),
           mrp: Joi.number().positive().required(),
           stock: Joi.number().integer().min(0).required(),
-          sku: Joi.string().optional().allow(""),
+          sku: Joi.string().optional(),
         }),
       )
       .min(1)
       .optional(),
     tags: Joi.array().items(Joi.string().lowercase().trim()).optional(),
-    // Shipping dimensions
     weight: Joi.number().positive().optional(),
-    length: Joi.number().positive().optional(),
-    breadth: Joi.number().positive().optional(),
-    height: Joi.number().positive().optional(),
     isFeatured: Joi.boolean().optional(),
     isActive: Joi.boolean().optional(),
     taxRate: Joi.number().min(0).max(100).optional(),
-    hsn: Joi.string().optional().allow(""),
+    hsn: Joi.string().optional(),
   }),
 
   // Cart

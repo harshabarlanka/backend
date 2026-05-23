@@ -401,14 +401,18 @@ const cancelOrder = catchAsync(async (req, res) => {
 
   if (!order) throw new ApiError(404, 'Order not found.');
 
+  // AWB guard first — an order can have an AWB even before status changes to 'shipped'
   if (order.awbCode) {
     throw new ApiError(400, 'Order cannot be cancelled — already dispatched.');
   }
 
-  if (order.status !== 'confirmed') {
+  // FIX: canCancel virtual (Order.model.js) allows 'confirmed' and 'preparing'.
+  // The previous check was !== 'confirmed' only, which meant the frontend Cancel
+  // button (visible for 'preparing' orders via canCancel) would always get a 400.
+  if (!['confirmed', 'preparing'].includes(order.status)) {
     throw new ApiError(
       400,
-      `Order can only be cancelled when it is in "confirmed" status.`,
+      `Order can only be cancelled when confirmed or being prepared. Current status: "${order.status}".`,
     );
   }
 
