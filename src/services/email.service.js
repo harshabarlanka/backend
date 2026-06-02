@@ -1,5 +1,5 @@
-const nodemailer = require('nodemailer');
-const logger = require('../utils/logger');
+const nodemailer = require("nodemailer");
+const logger = require("../utils/logger");
 
 // ─── Transporter ─────────────────────────────────────────────────────────────
 
@@ -21,11 +21,12 @@ const sendEmail = async ({ to, subject, html, text }) => {
   try {
     const transporter = createTransporter();
     const info = await transporter.sendMail({
-      from: process.env.EMAIL_FROM || '"Pickle Store" <noreply@picklestore.com>',
+      from:
+        process.env.EMAIL_FROM || '"Pickle Store" <noreply@picklestore.com>',
       to,
       subject,
       html,
-      text: text || html.replace(/<[^>]*>/g, ''), // fallback plain text
+      text: text || html.replace(/<[^>]*>/g, ""), // fallback plain text
     });
     logger.info(`Email sent to ${to}: ${info.messageId}`);
     return info;
@@ -66,7 +67,7 @@ const sendWelcomeEmail = async ({ email, name }) => {
     </a>
   `);
 
-  await sendEmail({ to: email, subject: 'Welcome to Pickle Store! 🫙', html });
+  await sendEmail({ to: email, subject: "Welcome to Pickle Store! 🫙", html });
 };
 
 /**
@@ -88,7 +89,11 @@ const sendPasswordResetEmail = async ({ email, name, resetToken }) => {
     </p>
   `);
 
-  await sendEmail({ to: email, subject: 'Reset your Pickle Store password', html });
+  await sendEmail({
+    to: email,
+    subject: "Reset your Pickle Store password",
+    html,
+  });
 };
 
 /**
@@ -103,15 +108,15 @@ const sendOrderConfirmationEmail = async ({ email, name, order }) => {
         <td style="padding: 8px 0; border-bottom: 1px solid #f0f0f0; text-align:center;">${item.quantity}</td>
         <td style="padding: 8px 0; border-bottom: 1px solid #f0f0f0; text-align:right;">₹${item.price * item.quantity}</td>
       </tr>
-    `
+    `,
     )
-    .join('');
+    .join("");
 
   const html = baseTemplate(`
     <h3>Order Confirmed! 🎉</h3>
     <p>Hi ${name}, your order has been placed successfully.</p>
     <p><strong>Order Number:</strong> ${order.orderNumber}</p>
-    <p><strong>Payment Method:</strong> ${order.paymentMethod === 'cod' ? 'Cash on Delivery' : 'Online Payment'}</p>
+    <p><strong>Payment Method:</strong> ${order.paymentMethod === "cod" ? "Cash on Delivery" : "Online Payment"}</p>
     <table style="width:100%; border-collapse: collapse; margin-top: 16px;">
       <thead>
         <tr style="background: #f9f9f9;">
@@ -135,7 +140,11 @@ const sendOrderConfirmationEmail = async ({ email, name, order }) => {
     </a>
   `);
 
-  await sendEmail({ to: email, subject: `Order Confirmed — ${order.orderNumber}`, html });
+  await sendEmail({
+    to: email,
+    subject: `Order Confirmed — ${order.orderNumber}`,
+    html,
+  });
 };
 
 /**
@@ -145,15 +154,19 @@ const sendShipmentEmail = async ({ email, name, order }) => {
   const html = baseTemplate(`
     <h3>Your order is on its way! 🚚</h3>
     <p>Hi ${name}, great news — your order <strong>${order.orderNumber}</strong> has been shipped.</p>
-    ${order.courierName ? `<p><strong>Courier:</strong> ${order.courierName}</p>` : ''}
-    ${order.awbCode ? `<p><strong>Tracking Number:</strong> ${order.awbCode}</p>` : ''}
+    ${order.courierName ? `<p><strong>Courier:</strong> ${order.courierName}</p>` : ""}
+    ${order.awbCode ? `<p><strong>Tracking Number:</strong> ${order.awbCode}</p>` : ""}
     <a href="${process.env.CLIENT_URL}/orders/${order._id}/track"
        style="display: inline-block; background: #e67e22; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; margin-top: 16px;">
       Track Order
     </a>
   `);
 
-  await sendEmail({ to: email, subject: `Shipped — ${order.orderNumber}`, html });
+  await sendEmail({
+    to: email,
+    subject: `Shipped — ${order.orderNumber}`,
+    html,
+  });
 };
 
 /**
@@ -169,7 +182,60 @@ const sendReviewRequestEmail = async ({ email, name, order }) => {
     </a>
   `);
 
-  await sendEmail({ to: email, subject: 'How was your Pickle Store order?', html });
+  await sendEmail({
+    to: email,
+    subject: "How was your Pickle Store order?",
+    html,
+  });
+};
+
+/**
+ * Admin alert email — sent to ADMIN_ALERT_EMAIL (falls back to EMAIL_USER).
+ *
+ * Used by:
+ *   - paymentReconciliation.cron.js (orphaned payment found/fixed)
+ *   - Any other internal ops alert that needs human attention
+ *
+ * @param {string} subject   - Short subject line describing the alert
+ * @param {string} body      - Plain-text or HTML body of the alert
+ * @param {object} [meta]    - Optional key-value pairs appended as a debug table
+ */
+const sendAdminAlertEmail = async ({ subject, body, meta = {} }) => {
+  const adminEmail = process.env.ADMIN_ALERT_EMAIL || process.env.EMAIL_USER;
+
+  if (!adminEmail) {
+    logger.warn(
+      "[sendAdminAlertEmail] No admin email configured — alert not sent. Set ADMIN_ALERT_EMAIL.",
+    );
+    return;
+  }
+
+  const metaRows = Object.entries(meta)
+    .map(
+      ([k, v]) =>
+        `<tr><td style="padding:4px 8px;font-weight:bold;white-space:nowrap;">${k}</td><td style="padding:4px 8px;">${v}</td></tr>`,
+    )
+    .join("");
+
+  const metaTable = metaRows
+    ? `<table style="margin-top:16px;border-collapse:collapse;font-size:13px;width:100%;">${metaRows}</table>`
+    : "";
+
+  const html = baseTemplate(`
+    <h3 style="color:#c0392b;">⚠️ Admin Alert</h3>
+    <p>${body}</p>
+    ${metaTable}
+    <p style="margin-top:16px;font-size:12px;color:#999;">
+      This is an automated alert from the Pickle Store backend.<br/>
+      Time: ${new Date().toISOString()}
+    </p>
+  `);
+
+  await sendEmail({
+    to: adminEmail,
+    subject: `[Pickle Store Alert] ${subject}`,
+    html,
+  });
 };
 
 module.exports = {
@@ -178,4 +244,5 @@ module.exports = {
   sendOrderConfirmationEmail,
   sendShipmentEmail,
   sendReviewRequestEmail,
+  sendAdminAlertEmail,
 };

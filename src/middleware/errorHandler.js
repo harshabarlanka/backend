@@ -72,6 +72,34 @@ const sendProdError = (err, res) => {
 
 // ─── Main Error Handler ───────────────────────────────────────────────────────
 
+// ─── Observability hook ───────────────────────────────────────────────────────
+// To enable Sentry error monitoring:
+//   1. npm install @sentry/node
+//   2. Add SENTRY_DSN to your Render environment variables
+//   3. Uncomment the three lines below
+//
+// const Sentry = require('@sentry/node');
+// Sentry.init({ dsn: process.env.SENTRY_DSN, environment: process.env.NODE_ENV });
+// const captureException = (err, req) => Sentry.captureException(err, { extra: { url: req.originalUrl, method: req.method } });
+//
+// When Sentry is not configured, this is a silent no-op:
+const captureException = process.env.SENTRY_DSN
+  ? (() => {
+      try {
+        // Only require Sentry if the DSN is set — avoids crash when package is not installed
+        const Sentry = require('@sentry/node');
+        Sentry.init({ dsn: process.env.SENTRY_DSN, environment: process.env.NODE_ENV });
+        return (err, req) =>
+          Sentry.captureException(err, {
+            extra: { url: req?.originalUrl, method: req?.method, ip: req?.ip },
+          });
+      } catch {
+        logger.warn('[errorHandler] SENTRY_DSN is set but @sentry/node is not installed. Run: npm install @sentry/node');
+        return () => {};
+      }
+    })()
+  : () => {}; // no-op when SENTRY_DSN not configured
+
 const errorHandler = (err, req, res, next) => {
   err.statusCode = err.statusCode || 500;
 
@@ -90,6 +118,13 @@ const errorHandler = (err, req, res, next) => {
   if (err.name === 'JsonWebTokenError') error = handleJWTError();
   if (err.name === 'TokenExpiredError') error = handleJWTExpiredError();
   if (err.name === 'MulterError') error = handleMulterError(err);
+
+  // Report non-operational (unexpected) errors to the observability service.
+  // Operational errors (4xx, known ApiErrors) are intentional control flow —
+  // they are logged above but not forwarded to Sentry to avoid noise.
+  if (!error.isOperational) {
+    captureException(err, req);
+  }
 
   sendProdError(error, res);
 };

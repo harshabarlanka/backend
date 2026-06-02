@@ -103,11 +103,10 @@ const getBestsellers = catchAsync(async (req, res) => {
   const cacheKey = `${limitNum}:${pageNum}`;
   const cached = bestsellersCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < BESTSELLERS_TTL) {
-    res.setHeader(
-      "Cache-Control",
-      "public, max-age=300, stale-while-revalidate=60",
-    );
-    res.setHeader("X-Cache", "HIT");
+    // Serve from in-memory cache but keep HTTP headers consistent with the
+    // /api/products middleware (private, no-cache, must-revalidate).
+    // Do NOT set "public, max-age=N" here — that overrides the middleware
+    // and re-introduces the same-browser stale-data bug we fixed in app.js.
     return sendResponse(
       res,
       200,
@@ -199,11 +198,10 @@ const getBestsellers = catchAsync(async (req, res) => {
     ts: Date.now(),
   });
 
-  res.setHeader(
-    "Cache-Control",
-    "public, max-age=300, stale-while-revalidate=60",
-  );
-  res.setHeader("X-Cache", "MISS");
+  // Do NOT set "public, max-age=N" — the /api/products middleware in app.js
+  // already sets "private, no-cache, must-revalidate" on all product GETs.
+  // The in-memory bestsellersCache (above) handles server-side deduplication of
+  // the expensive $lookup aggregation — no browser caching needed here.
   return sendResponse(
     res,
     200,
@@ -237,10 +235,9 @@ const getProductById = catchAsync(async (req, res) => {
 // ─── Categories ───────────────────────────────────────────────────────────────
 
 const getCategories = catchAsync(async (req, res) => {
-  res.setHeader(
-    "Cache-Control",
-    "public, max-age=3600, stale-while-revalidate=600",
-  );
+  // Categories change rarely but still must revalidate so that adding a new
+  // category shows up immediately in the same browser without a long TTL wait.
+  // The /api/products middleware sets private, no-cache, must-revalidate.
   const categories = await Product.distinct("category", { isActive: true });
   return sendResponse(res, 200, "Categories fetched.", { categories });
 });

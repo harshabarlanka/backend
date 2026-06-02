@@ -9,16 +9,21 @@ const ApiError = require("../utils/ApiError");
  *   router.post('/register', validate(schemas.register), authController.register);
  */
 const validate = (schema) => (req, res, next) => {
-  const { error } = schema.validate(req.body, {
+  const { error, value } = schema.validate(req.body, {
     abortEarly: false, // collect ALL errors, not just the first
-    stripUnknown: true, // silently drop unknown keys
-    convert: true, // coerce types where possible (e.g. "5" → 5)
+    stripUnknown: true, // silently drop unknown keys — prevents mass assignment
+    convert: true, // coerce types where safe (e.g. "5" → 5)
   });
 
   if (error) {
     const messages = error.details.map((d) => d.message.replace(/['"]/g, ""));
     return next(new ApiError(422, "Validation failed", messages));
   }
+
+  // CRITICAL: replace req.body with the stripped+coerced value so controllers
+  // only ever see schema-defined keys. Without this line, stripUnknown has no
+  // effect — the original req.body (with extra keys) flows through to Mongoose.
+  req.body = value;
 
   next();
 };

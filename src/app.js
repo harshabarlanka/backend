@@ -57,6 +57,13 @@ const app = express();
 // Trust Render/Vercel proxy — required for correct req.ip in rate limiters
 app.set("trust proxy", 1);
 
+// Keep Express ETags enabled (default) — they allow CDN / proxy revalidation
+// (If-None-Match → 304) which saves bandwidth for intermediate caches.
+// The "private" directive in our Cache-Control headers below prevents the
+// browser from treating its local cache as authoritative for the same user
+// after a mutation. Combined with "no-cache, must-revalidate", the browser
+// must always revalidate with the server before serving cached content.
+
 // ─── Compression ──────────────────────────────────────────────────────────────
 app.use(compression({ threshold: 1024, level: 6 }));
 
@@ -276,34 +283,56 @@ app.use("/api/payment/webhook", webhookLimiter);
 // ─── CSRF (applied AFTER webhook routes which don't need it) ─────────────────
 app.use("/api", csrfGuard);
 
-// ─── Cache-Control for public GET routes ─────────────────────────────────────
+// ─── Cache-Control for dynamic API routes ────────────────────────────────────
+//
+// Strategy: "private, no-cache, must-revalidate"
+//
+// WHY THIS FIXES THE STALE-DATA BUG:
+//   The original headers were "public, max-age=300" (products) and
+//   "public, max-age=600" (combos). Those told the browser it could serve the
+//   cached response for 5–10 minutes with ZERO server round-trips — not even
+//   on a hard refresh of the same URL. That is why:
+//     • The same browser that performed a write kept seeing old data (its local
+//       cache was the authority for the next several minutes).
+//     • Other browsers / devices saw fresh data immediately (no cache entry).
+//
+// WHAT EACH DIRECTIVE DOES:
+//   private          — response is user-specific; shared CDN caches must not
+//                      store it. (Our product lists vary by auth state, params,
+//                      etc., so this is semantically correct anyway.)
+//   no-cache         — browser must revalidate with the origin before using any
+//                      cached copy. It may still store the response locally,
+//                      but must check freshness on every request.
+//   must-revalidate  — if the origin is unreachable, serve an error rather than
+//                      a potentially-stale cached response. Prevents accidental
+//                      stale serving on intermittent connectivity.
+//
+// WHAT THIS DOES NOT BREAK:
+//   • In-app navigation / back-button feel — the frontend useFetch hook keeps
+//     its own 30-second in-memory cache for fast back-navigation; that layer
+//     is invalidated immediately after any mutation via invalidateCache().
+//   • Other browsers / devices — they revalidate as before; MongoDB always
+//     returns the latest data so they see updates immediately too.
+//   • Admin routes already return no relevant Cache-Control from this file
+//     (they are authenticated and Helmet's defaults apply — also private).
 app.use("/api/products", (req, res, next) => {
   if (req.method === "GET") {
-    if (
-      req.path.includes("/reviews") ||
-      req.path === "/my-reviews" ||
-      req.path.startsWith("/my-reviews")
-    ) {
-      res.setHeader("Cache-Control", "no-store");
-    } else {
-      res.setHeader(
-        "Cache-Control",
-        "public, max-age=300, stale-while-revalidate=60",
-      );
-    }
-
-    res.setHeader("Vary", "Accept-Encoding");
+    res.setHeader("Cache-Control", "private, no-cache, must-revalidate");
+    res.setHeader("Vary", "Accept-Encoding, Authorization");
   }
-
   next();
 });
 app.use("/api/combos", (req, res, next) => {
   if (req.method === "GET") {
-    res.setHeader(
-      "Cache-Control",
-      "public, max-age=600, stale-while-revalidate=120",
-    );
-    res.setHeader("Vary", "Accept-Encoding");
+    res.setHeader("Cache-Control", "private, no-cache, must-revalidate");
+    res.setHeader("Vary", "Accept-Encoding, Authorization");
+  }
+  next();
+});
+app.use("/api/admin", (req, res, next) => {
+  if (req.method === "GET") {
+    // Admin responses are always user-specific and must never be cached.
+    res.setHeader("Cache-Control", "private, no-cache, must-revalidate");
   }
   next();
 });
